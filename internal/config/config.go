@@ -1,0 +1,178 @@
+package config
+
+import (
+	"os"
+	"strings"
+
+	log "github.com/Kaese72/huemie-lib/logging"
+	"github.com/pkg/errors"
+	"github.com/spf13/viper"
+)
+
+// DatabaseConfig holds the MariaDB connection parameters.
+type DatabaseConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	Database string `mapstructure:"database"`
+}
+
+func (c DatabaseConfig) Validate() error {
+	if c.Host == "" {
+		return errors.New("must supply database host")
+	}
+	if c.User == "" {
+		return errors.New("must supply database user")
+	}
+	if c.Password == "" {
+		return errors.New("must supply database password")
+	}
+	return nil
+}
+
+// EventConfig holds the RabbitMQ connection parameters used to coordinate
+// conversation processing across replicas (termination signals, update
+// notifications for SSE fan-out).
+type EventConfig struct {
+	ConnectionString string `mapstructure:"connectionstring"`
+}
+
+func (c EventConfig) Validate() error {
+	if c.ConnectionString == "" {
+		return errors.New("must supply event connection string")
+	}
+	return nil
+}
+
+// DeviceStoreConfig holds the parameters needed to call the device-store
+// public API as the bot's own user, per the requirement that "the bot is
+// authenticated as its own user, to the system, and makes actions via that
+// user."
+type DeviceStoreConfig struct {
+	URL string `mapstructure:"url"`
+	// JWT is the bearer token the bot presents to device-store. Per the
+	// README this is a stopgap: "JWT for user access (This will change
+	// later, but for now its fine)" / "solved in runtime later".
+	JWT string `mapstructure:"jwt"`
+}
+
+func (c DeviceStoreConfig) Validate() error {
+	if c.URL == "" {
+		return errors.New("must supply device store URL")
+	}
+	if c.JWT == "" {
+		return errors.New("must supply device store JWT")
+	}
+	return nil
+}
+
+// AnthropicConfig holds the LLM provider configuration.
+type AnthropicConfig struct {
+	// APIKey authenticates against the Anthropic API. Per the README this is
+	// a stopgap: "This will be stored in the database later, but for now
+	// config".
+	APIKey string `mapstructure:"api-key"`
+	// Model is the Claude model ID used for every conversation turn.
+	Model string `mapstructure:"model"`
+}
+
+func (c AnthropicConfig) Validate() error {
+	if c.APIKey == "" {
+		return errors.New("must supply anthropic API key")
+	}
+	if c.Model == "" {
+		return errors.New("must supply anthropic model")
+	}
+	return nil
+}
+
+// LockConfig holds the conversation-lock tuning parameters described in the
+// README's "Replica Conversation lock" section.
+type LockConfig struct {
+	// TimeoutSeconds is how long a lock may go without being re-acquired
+	// before another replica is allowed to consider it abandoned and take
+	// over. The README specifies 300 seconds.
+	TimeoutSeconds int `mapstructure:"timeout-seconds"`
+	// MaxToolLoopIterations bounds the tool-call <-> LLM round trip loop
+	// (README step 6/7) so a misbehaving model cannot hold the conversation
+	// lock forever.
+	MaxToolLoopIterations int `mapstructure:"max-tool-loop-iterations"`
+}
+
+func (c LockConfig) Validate() error {
+	if c.TimeoutSeconds <= 0 {
+		return errors.New("lock timeout seconds must be positive")
+	}
+	if c.MaxToolLoopIterations <= 0 {
+		return errors.New("max tool loop iterations must be positive")
+	}
+	return nil
+}
+
+type Config struct {
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Event       EventConfig       `mapstructure:"event"`
+	DeviceStore DeviceStoreConfig `mapstructure:"device-store"`
+	Anthropic   AnthropicConfig   `mapstructure:"anthropic"`
+	Lock        LockConfig        `mapstructure:"lock"`
+}
+
+func (c Config) Validate() error {
+	if err := c.Database.Validate(); err != nil {
+		return err
+	}
+	if err := c.Event.Validate(); err != nil {
+		return err
+	}
+	if err := c.DeviceStore.Validate(); err != nil {
+		return err
+	}
+	if err := c.Anthropic.Validate(); err != nil {
+		return err
+	}
+	if err := c.Lock.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+var Loaded Config
+
+func init() {
+	// We have elected not to use AutomaticEnv() because of https://github.com/spf13/viper/issues/584
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+
+	// Database
+	viper.BindEnv("database.host")
+	viper.BindEnv("database.port")
+	viper.SetDefault("database.port", 3306)
+	viper.BindEnv("database.user")
+	viper.BindEnv("database.password")
+	viper.BindEnv("database.database")
+	viper.SetDefault("database.database", "chatbot")
+
+	// Event streaming
+	viper.BindEnv("event.connectionstring")
+
+	// Device store
+	viper.BindEnv("device-store.url")
+	viper.SetDefault("device-store.url", "http://device-store:8080")
+	viper.BindEnv("device-store.jwt")
+
+	// Anthropic
+	viper.BindEnv("anthropic.api-key")
+	viper.BindEnv("anthropic.model")
+	viper.SetDefault("anthropic.model", "claude-opus-5")
+
+	// Conversation locking
+	viper.BindEnv("lock.timeout-seconds")
+	viper.SetDefault("lock.timeout-seconds", 300)
+	viper.BindEnv("lock.max-tool-loop-iterations")
+	viper.SetDefault("lock.max-tool-loop-iterations", 25)
+
+	if err := viper.Unmarshal(&Loaded); err != nil {
+		log.Error(err.Error(), map[string]interface{}{})
+		os.Exit(1)
+	}
+}

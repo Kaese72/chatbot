@@ -1,0 +1,115 @@
+// Package restwebapp implements the REST + SSE API described in the
+// README's "API" section on top of internal/conversation.Service.
+package restwebapp
+
+import (
+	"context"
+	"errors"
+
+	"github.com/Kaese72/chatbot/internal/conversation"
+	"github.com/Kaese72/chatbot/internal/persistence"
+	"github.com/Kaese72/chatbot/restmodels"
+	log "github.com/Kaese72/huemie-lib/logging"
+	"github.com/danielgtaylor/huma/v2"
+)
+
+// WebApp holds the handlers for every /chatbot-service/v0/conversations...
+// endpoint.
+type WebApp struct {
+	conversations *conversation.Service
+}
+
+func NewWebApp(conversations *conversation.Service) *WebApp {
+	return &WebApp{conversations: conversations}
+}
+
+// mapServiceError translates the sentinel errors internal/persistence
+// defines into the HTTP status codes the README's API section implies:
+// unknown conversation -> 404, "another query can not be added to that
+// conversation" / lock contention -> 409.
+func mapServiceError(err error) error {
+	switch {
+	case errors.Is(err, persistence.ErrConversationNotFound):
+		return huma.Error404NotFound(err.Error())
+	case errors.Is(err, persistence.ErrConversationNotAwaitingInput):
+		return huma.Error409Conflict(err.Error())
+	case errors.Is(err, persistence.ErrConversationLocked):
+		return huma.Error409Conflict(err.Error())
+	default:
+		log.Error(err.Error(), map[string]interface{}{})
+		return huma.Error500InternalServerError("internal error")
+	}
+}
+
+func (app *WebApp) ListConversations(ctx context.Context, input *struct{}) (*struct {
+	Body restmodels.ConversationList
+}, error) {
+	conversations, err := app.conversations.ListConversations(ctx)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.ConversationList
+	}{Body: restmodels.ConversationList{Conversations: conversations}}, nil
+}
+
+func (app *WebApp) NewConversation(ctx context.Context, input *struct {
+	Body restmodels.NewConversationRequest
+}) (*struct {
+	Body restmodels.Conversation
+}, error) {
+	conv, err := app.conversations.New(ctx, input.Body.Query)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.Conversation
+	}{Body: conv}, nil
+}
+
+func (app *WebApp) GetConversation(ctx context.Context, input *struct {
+	ConversationID int64 `path:"conversationID"`
+}) (*struct {
+	Body restmodels.Conversation
+}, error) {
+	conv, err := app.conversations.GetConversation(ctx, input.ConversationID)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.Conversation
+	}{Body: conv}, nil
+}
+
+func (app *WebApp) InputConversation(ctx context.Context, input *struct {
+	ConversationID int64 `path:"conversationID"`
+	Body           restmodels.InputRequest
+}) (*struct {
+	Body restmodels.Conversation
+}, error) {
+	conv, err := app.conversations.Input(ctx, input.ConversationID, input.Body.Query)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.Conversation
+	}{Body: conv}, nil
+}
+
+func (app *WebApp) TerminateConversation(ctx context.Context, input *struct {
+	ConversationID int64 `path:"conversationID"`
+}) (*struct{}, error) {
+	if err := app.conversations.Terminate(ctx, input.ConversationID); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct{}{}, nil
+}
+
+func (app *WebApp) ForgetConversation(ctx context.Context, input *struct {
+	ConversationID int64 `path:"conversationID"`
+}) (*struct{}, error) {
+	if err := app.conversations.Forget(ctx, input.ConversationID); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct{}{}, nil
+}
