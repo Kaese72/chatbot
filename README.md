@@ -126,6 +126,43 @@ is always at most one active key. Any endpoint that would result in new traffic 
 at the moment it is invoked; if none is active, that endpoint fails with HTTP/503 and a
 presentable error message rather than proceeding.
 
+### Identity
+
+Per "the bot is authenticated as its own user, to the system, and makes actions via that user",
+the bot needs a real, ordinary user in the authentication service to act as -- but nothing in
+this repository, or the authentication service, should have to hardcode or bootstrap one. Instead
+the chatbot provisions its own identity, on demand, the first time someone with a valid session
+sets it up:
+
+* `POST /chatbot-service/v0/identities/setup` -- body `{"name": "..."}`. Using the caller's own
+  bearer token (already validated by this service's own inbound auth middleware) to authorize the
+  call, the chatbot asks the authentication service to create a brand-new user named `name`, with
+  a random username and password the caller never sees, then saves that username/password in its
+  own database. This never blocks conversations from being created or used -- it only determines
+  whether tool calls that act on another service (currently device-store) succeed.
+* `GET /chatbot-service/v0/identities/status` -- body `{"configured": true|false}`, so a UI can
+  decide whether to show onboarding for this step. It reports only whether an identity is saved
+  locally, not whether the authentication-service user behind it still exists.
+
+Before every tool call, the chatbot logs in as its saved identity to get a fresh use-token,
+rather than holding one long-lived credential from setup time. If no identity has been saved yet,
+or the authentication service rejects the login (most likely because the user behind it was
+deleted directly in the authentication service, out from under the chatbot), every tool call
+fails with a result explaining that identity setup is needed -- the conversation itself continues
+normally; the model just can't act on anything until setup is (re-)run.
+
+**Why this exists, and why it's a stopgap:** the alternative was a deploy-time JWT/credential
+configured once and never rotated, checked into the same secret store as every other deploy-time
+value. Provisioning it dynamically avoids ever hand-minting a credential for the bot, and gives it
+a real, deletable, auditable identity like any other user of the system. The corresponding cost:
+there is no lifecycle management. Re-running setup abandons the previous authentication-service
+user rather than deleting it, and nothing here notices or reacts if that user is deleted
+externally until the next tool call fails to log in.
+**TODO:** replace this with whatever this system's real service-identity story ends up being
+(a dedicated service-account concept in the authentication service, short-lived tokens issued
+per-request, etc.) once one exists -- this mechanism was designed to require zero changes to the
+authentication service, which was the point, but is not meant to be the permanent answer.
+
 ## Architecture
 
 ### Replica owns active dialog of conversation
@@ -244,10 +281,13 @@ internally.
 
 The service itself needs to have the following configured at deploy time:
 
-* JWT for user access (This will change later, but for now its fine)
+* The authentication service's own REST API URL, used to create and log in as the bot's own
+  identity (see the **Identity** section above).
 * The authentication service's RSA public key, used to verify the `use` token on every inbound
   request to this service's own REST API (same scheme as `device-store`: no endpoint is reachable
   without a valid bearer token except the OpenAPI/docs routes).
 
-The Anthropic API key is *not* deploy-time config -- it is stored in the database and managed
-at runtime via the **API key** API described above.
+Neither the Anthropic API key nor the device-store credential is deploy-time config: the Anthropic
+key is stored in the database and managed at runtime via the **API key** API described above, and
+the device-store credential is a self-provisioned identity set up via the **Identity** API, also
+described above.

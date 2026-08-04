@@ -36,6 +36,11 @@ var (
 	// returned to the caller of any endpoint that would otherwise send a
 	// new request to the LLM.
 	ErrNoActiveAPIKey = errors.New("no active API key is configured")
+	// ErrIdentityNotConfigured means POST /identities/setup has never been
+	// run (or was run and the resulting identity's row was since removed).
+	// internal/identity surfaces this as the failure reason for any tool
+	// call that needs to act on another service.
+	ErrIdentityNotConfigured = errors.New("chatbot identity is not configured")
 )
 
 // NewDialogEntry describes a DialogEntry to be appended to a conversation.
@@ -133,4 +138,22 @@ type Persistence interface {
 	// takes effect on the very next request without restarting the
 	// service.
 	ActiveAPIKeyValue(ctx context.Context, keyType restmodels.APIKeyType) (string, error)
+
+	// IdentityConfigured reports whether a chatbot identity has been saved,
+	// for GET /identities/status.
+	IdentityConfigured(ctx context.Context) (bool, error)
+
+	// SaveIdentity overwrites any previously saved identity with username/
+	// password, atomically. Used by POST /identities/setup, including
+	// re-running it after the underlying authentication-service user was
+	// deleted -- there is deliberately no "already configured" guard here
+	// (unlike the authentication service's own bootstrap setup), since
+	// replacing a dead identity is the intended recovery path.
+	SaveIdentity(ctx context.Context, username string, password string) error
+
+	// IdentityCredentials returns the saved chatbot identity's username and
+	// password, or ErrIdentityNotConfigured if none is saved. This is the
+	// sole path by which internal/identity.Service obtains the credential
+	// it logs in with before every tool call that acts on another service.
+	IdentityCredentials(ctx context.Context) (username string, password string, err error)
 }

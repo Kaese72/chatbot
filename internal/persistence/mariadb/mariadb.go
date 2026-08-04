@@ -439,6 +439,47 @@ func (p *mariadbPersistence) ActiveAPIKeyValue(ctx context.Context, keyType rest
 	return value, err
 }
 
+func (p *mariadbPersistence) IdentityConfigured(ctx context.Context) (bool, error) {
+	var one int
+	err := p.db.QueryRowContext(ctx, `SELECT 1 FROM identity WHERE id = 1`).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (p *mariadbPersistence) SaveIdentity(ctx context.Context, username string, password string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM identity WHERE id = 1`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO identity (id, username, password) VALUES (1, ?, ?)
+	`, username, password); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *mariadbPersistence) IdentityCredentials(ctx context.Context) (string, string, error) {
+	var username, password string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT username, password FROM identity WHERE id = 1
+	`).Scan(&username, &password)
+	if err == sql.ErrNoRows {
+		return "", "", persistence.ErrIdentityNotConfigured
+	}
+	return username, password, err
+}
+
 // --- helpers ---
 
 func apiKeyExists(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {

@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/Kaese72/chatbot/internal/authclient"
 	"github.com/Kaese72/chatbot/internal/config"
 	"github.com/Kaese72/chatbot/internal/conversation"
 	"github.com/Kaese72/chatbot/internal/devicestore"
 	"github.com/Kaese72/chatbot/internal/events"
+	"github.com/Kaese72/chatbot/internal/identity"
 	"github.com/Kaese72/chatbot/internal/llm"
 	"github.com/Kaese72/chatbot/internal/persistence/mariadb"
 	"github.com/Kaese72/chatbot/internal/restwebapp"
@@ -33,7 +35,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	deviceStoreClient := devicestore.NewClient(config.Loaded.DeviceStore.URL, config.Loaded.DeviceStore.JWT)
+	authClient := authclient.NewClient(config.Loaded.Authentication.URL)
+	identityService := identity.NewService(db, authClient)
+
+	deviceStoreClient := devicestore.NewClient(config.Loaded.DeviceStore.URL, identityService.DeviceStoreToken)
 	dispatcher := llm.NewDispatcher(deviceStoreClient)
 	llmClient := llm.NewClient(config.Loaded.Anthropic.Model)
 
@@ -58,7 +63,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	webapp := restwebapp.NewWebApp(convService)
+	webapp := restwebapp.NewWebApp(convService, identityService)
 
 	pubKey, err := middleware.LoadPublicKeyFromFile(config.Loaded.Auth.RSAPublicKeyPath)
 	if err != nil {
@@ -85,6 +90,9 @@ func main() {
 	huma.Get(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.GetAPIKey)
 	huma.Patch(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.UpdateAPIKey)
 	huma.Delete(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.DeleteAPIKey)
+
+	huma.Post(api, "/chatbot-service/v0/identities/setup", webapp.SetupIdentity)
+	huma.Get(api, "/chatbot-service/v0/identities/status", webapp.IdentityStatus)
 
 	sse.Register(api, huma.Operation{
 		OperationID: "follow-conversation",

@@ -1,9 +1,10 @@
 // Package devicestore is an HTTP client for the device-store service's
 // public API, used to enumerate the devices/groups and capabilities
 // available to the LLM as tools, and to trigger them. It authenticates as
-// the bot's own configured user (Bearer JWT), per the README's requirement
-// that "the bot is authenticated as its own user, to the system, and makes
-// actions via that user."
+// the bot's own identity (Bearer use-token, fetched fresh for every request
+// via the tokenProvider passed to NewClient -- see internal/identity), per
+// the README's requirement that "the bot is authenticated as its own user,
+// to the system, and makes actions via that user."
 //
 // The types below intentionally mirror only the subset of device-store's
 // restmodels package the chatbot needs, defined locally rather than
@@ -101,16 +102,20 @@ type CapabilityArgs map[string]any
 
 // Client is an HTTP client for device-store's public API.
 type Client struct {
-	baseURL    string
-	jwt        string
-	httpClient *http.Client
+	baseURL       string
+	tokenProvider func(context.Context) (string, error)
+	httpClient    *http.Client
 }
 
-func NewClient(baseURL string, jwt string) *Client {
+// NewClient builds a device-store client that calls tokenProvider to obtain
+// a bearer token immediately before every request, rather than holding one
+// fixed at construction time -- see internal/identity.Service.DeviceStoreToken,
+// the only tokenProvider this is actually constructed with.
+func NewClient(baseURL string, tokenProvider func(context.Context) (string, error)) *Client {
 	return &Client{
-		baseURL:    baseURL,
-		jwt:        jwt,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL:       baseURL,
+		tokenProvider: tokenProvider,
+		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -164,11 +169,15 @@ func (c *Client) TriggerGroupCapability(ctx context.Context, groupID int, capabi
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, out any) error {
+	token, err := c.tokenProvider(ctx)
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.jwt)
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -189,11 +198,15 @@ func (c *Client) postJSON(ctx context.Context, path string, args CapabilityArgs)
 	if err != nil {
 		return err
 	}
+	token, err := c.tokenProvider(ctx)
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.jwt)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

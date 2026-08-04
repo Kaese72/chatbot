@@ -48,21 +48,30 @@ func (c EventConfig) Validate() error {
 // DeviceStoreConfig holds the parameters needed to call the device-store
 // public API as the bot's own user, per the requirement that "the bot is
 // authenticated as its own user, to the system, and makes actions via that
-// user."
+// user." The credential itself is no longer deploy-time config -- see
+// internal/identity.Service and AuthenticationConfig below.
 type DeviceStoreConfig struct {
 	URL string `mapstructure:"url"`
-	// JWT is the bearer token the bot presents to device-store. Per the
-	// README this is a stopgap: "JWT for user access (This will change
-	// later, but for now its fine)" / "solved in runtime later".
-	JWT string `mapstructure:"jwt"`
 }
 
 func (c DeviceStoreConfig) Validate() error {
 	if c.URL == "" {
 		return errors.New("must supply device store URL")
 	}
-	if c.JWT == "" {
-		return errors.New("must supply device store JWT")
+	return nil
+}
+
+// AuthenticationConfig holds the parameters needed to call the
+// authentication service's own REST API (creating the chatbot's identity,
+// logging in as it) -- as opposed to AuthConfig above, which is only the
+// public key used to verify tokens on chatbot's own inbound requests.
+type AuthenticationConfig struct {
+	URL string `mapstructure:"url"`
+}
+
+func (c AuthenticationConfig) Validate() error {
+	if c.URL == "" {
+		return errors.New("must supply authentication service URL")
 	}
 	return nil
 }
@@ -123,12 +132,13 @@ func (c LockConfig) Validate() error {
 }
 
 type Config struct {
-	Database    DatabaseConfig    `mapstructure:"database"`
-	Event       EventConfig       `mapstructure:"event"`
-	DeviceStore DeviceStoreConfig `mapstructure:"device-store"`
-	Anthropic   AnthropicConfig   `mapstructure:"anthropic"`
-	Auth        AuthConfig        `mapstructure:"auth"`
-	Lock        LockConfig        `mapstructure:"lock"`
+	Database       DatabaseConfig       `mapstructure:"database"`
+	Event          EventConfig          `mapstructure:"event"`
+	DeviceStore    DeviceStoreConfig    `mapstructure:"device-store"`
+	Anthropic      AnthropicConfig      `mapstructure:"anthropic"`
+	Auth           AuthConfig           `mapstructure:"auth"`
+	Authentication AuthenticationConfig `mapstructure:"authentication"`
+	Lock           LockConfig           `mapstructure:"lock"`
 }
 
 func (c Config) Validate() error {
@@ -145,6 +155,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Auth.Validate(); err != nil {
+		return err
+	}
+	if err := c.Authentication.Validate(); err != nil {
 		return err
 	}
 	if err := c.Lock.Validate(); err != nil {
@@ -174,7 +187,6 @@ func init() {
 	// Device store
 	viper.BindEnv("device-store.url")
 	viper.SetDefault("device-store.url", "http://device-store:8080")
-	viper.BindEnv("device-store.jwt")
 
 	// Anthropic
 	viper.BindEnv("anthropic.model")
@@ -182,6 +194,11 @@ func init() {
 
 	// Auth (authentication service RS256 public key, for verifying `use` tokens)
 	viper.BindEnv("auth.rsa-public-key-path")
+
+	// Authentication service's own API (creating/logging in as the
+	// chatbot's identity -- see internal/identity)
+	viper.BindEnv("authentication.url")
+	viper.SetDefault("authentication.url", "http://authentication:8080")
 
 	// Conversation locking
 	viper.BindEnv("lock.timeout-seconds")

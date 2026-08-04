@@ -5,8 +5,10 @@ package restwebapp
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/Kaese72/chatbot/internal/conversation"
+	"github.com/Kaese72/chatbot/internal/identity"
 	"github.com/Kaese72/chatbot/internal/persistence"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
@@ -17,10 +19,11 @@ import (
 // endpoint.
 type WebApp struct {
 	conversations *conversation.Service
+	identity      *identity.Service
 }
 
-func NewWebApp(conversations *conversation.Service) *WebApp {
-	return &WebApp{conversations: conversations}
+func NewWebApp(conversations *conversation.Service, identity *identity.Service) *WebApp {
+	return &WebApp{conversations: conversations, identity: identity}
 }
 
 // mapServiceError translates the sentinel errors internal/persistence
@@ -182,4 +185,41 @@ func (app *WebApp) DeleteAPIKey(ctx context.Context, input *struct {
 		return nil, mapServiceError(err)
 	}
 	return &struct{}{}, nil
+}
+
+// SetupIdentity creates the chatbot's own user in the authentication
+// service and saves it as the identity every subsequent tool call
+// authenticates as. It reuses the caller's own bearer token (already
+// validated by the router's UseTokenMiddleware) to authorize the
+// authentication-service's POST /users call, so no additional privilege
+// beyond "some authenticated user requested this" is required or checked.
+func (app *WebApp) SetupIdentity(ctx context.Context, input *struct {
+	Authorization string `header:"Authorization"`
+	Body          restmodels.SetupIdentityRequest
+}) (*struct{}, error) {
+	token := strings.TrimSpace(strings.TrimPrefix(input.Authorization, "Bearer "))
+	if token == "" {
+		return nil, huma.Error401Unauthorized("missing bearer token")
+	}
+	if err := app.identity.Setup(ctx, token, input.Body.Name); err != nil {
+		log.Error(err.Error(), map[string]interface{}{})
+		return nil, huma.Error502BadGateway("failed to set up chatbot identity: " + err.Error())
+	}
+	return &struct{}{}, nil
+}
+
+// IdentityStatus reports whether POST /identities/setup has been completed,
+// so a UI can decide whether to show onboarding, per the README's
+// architecture note on this mechanism.
+func (app *WebApp) IdentityStatus(ctx context.Context, input *struct{}) (*struct {
+	Body restmodels.IdentityStatus
+}, error) {
+	configured, err := app.identity.Status(ctx)
+	if err != nil {
+		log.Error(err.Error(), map[string]interface{}{})
+		return nil, huma.Error500InternalServerError("failed to query identity status")
+	}
+	return &struct {
+		Body restmodels.IdentityStatus
+	}{Body: restmodels.IdentityStatus{Configured: configured}}, nil
 }
