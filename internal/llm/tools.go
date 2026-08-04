@@ -127,6 +127,11 @@ func ToolDefinitions() []anthropic.ToolUnionParam {
 				},
 				Required: []string{"group_id", "capability"},
 			},
+			// A cache_control breakpoint on the last tool definition covers
+			// the whole (fixed, identical-every-call) tools array -- see
+			// internal/llm/client.go's matching breakpoints on the system
+			// prompt and the last message of history.
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
 		}},
 	}
 }

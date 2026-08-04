@@ -190,7 +190,7 @@ func init() {
 
 	// Anthropic
 	viper.BindEnv("anthropic.model")
-	viper.SetDefault("anthropic.model", "claude-opus-5")
+	viper.SetDefault("anthropic.model", "claude-haiku-4-5-20251001")
 
 	// Auth (authentication service RS256 public key, for verifying `use` tokens)
 	viper.BindEnv("auth.rsa-public-key-path")

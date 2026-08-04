@@ -65,8 +65,8 @@ func (c *Client) RunTurn(ctx context.Context, apiKey string, messages []anthropi
 	params := anthropic.MessageNewParams{
 		Model:     c.model,
 		MaxTokens: maxTokens,
-		System:    []anthropic.TextBlockParam{{Text: SystemPrompt}},
-		Messages:  messages,
+		System:    []anthropic.TextBlockParam{{Text: SystemPrompt, CacheControl: anthropic.NewCacheControlEphemeralParam()}},
+		Messages:  withHistoryCacheBreakpoint(messages),
 		Tools:     ToolDefinitions(),
 		Thinking:  anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
 	}
@@ -91,4 +91,61 @@ func (c *Client) RunTurn(ctx context.Context, apiKey string, messages []anthropi
 		return message, fmt.Errorf("LLM stream error: %w", err)
 	}
 	return message, nil
+}
+
+// withHistoryCacheBreakpoint returns messages with a cache_control breakpoint
+// added to the last content block of the last message, so that (per
+// Anthropic's prompt caching rules) everything up to and including that
+// block is eligible to be served from cache on the next call with the same
+// prefix -- which, since internal/conversation.process's messages slice only
+// ever grows by appending, every later call in the same turn's tool loop
+// and every later turn of the same conversation will have.
+//
+// It never mutates messages or its content blocks in place: that slice is
+// reused and extended by the caller across every remaining iteration of the
+// current turn, and this breakpoint must move to the new last message each
+// call rather than accumulate on old ones -- Anthropic allows at most 4
+// cache_control breakpoints per request, and system prompt + tools already
+// use two of them.
+func withHistoryCacheBreakpoint(messages []anthropic.MessageParam) []anthropic.MessageParam {
+	if len(messages) == 0 {
+		return messages
+	}
+	last := messages[len(messages)-1]
+	if len(last.Content) == 0 {
+		return messages
+	}
+
+	lastBlockIndex := len(last.Content) - 1
+	block := last.Content[lastBlockIndex]
+	switch {
+	case block.OfText != nil:
+		marked := *block.OfText
+		marked.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfText = &marked
+	case block.OfToolUse != nil:
+		marked := *block.OfToolUse
+		marked.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfToolUse = &marked
+	case block.OfToolResult != nil:
+		marked := *block.OfToolResult
+		marked.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		block.OfToolResult = &marked
+	default:
+		// Every content block this service ever constructs is one of the
+		// three above (see internal/conversation/history.go); if that ever
+		// changes, skip caching rather than silently sending a malformed
+		// request.
+		return messages
+	}
+
+	content := make([]anthropic.ContentBlockParamUnion, len(last.Content))
+	copy(content, last.Content)
+	content[lastBlockIndex] = block
+	last.Content = content
+
+	out := make([]anthropic.MessageParam, len(messages))
+	copy(out, messages)
+	out[len(out)-1] = last
+	return out
 }
