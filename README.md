@@ -2,7 +2,7 @@
 
 This repository contains the chatbot, aimed to be hosted on the *appliance* and have 
 access to the services on the *appliance* it hosted on. You supply an API key (currently Anthropic)
-and the chatbot is available in the UI to have conversations with.
+via the **API key** API and the chatbot is available in the UI to have conversations with.
 
 Some basic requirements
 
@@ -97,6 +97,34 @@ all **DialogEntries** to contain. Those are
 * Initiative
   * AGENT, or
   * USER
+
+### API Key
+
+The **API key** entity holds the credential(s) used to talk to an LLM provider. It has
+
+* name (a human-readable label)
+* type (currently only ANTHROPIC)
+* active (a boolean; at most one API key is active at a time)
+* value (the secret key itself)
+
+There is no verification that a key is actually valid (has credits, isn't revoked, etc.) when
+it is added -- that is only discovered the next time it is actually used.
+
+Endpoints:
+
+* `/chatbot-service/v0/api-keys`
+  * GET a list of API keys (the secret value is never included in responses)
+  * POST a new API key
+* `/chatbot-service/v0/api-keys/{\d+}`
+  * GET a single API key (the secret value is never included)
+  * PATCH an existing API key (name, active, and/or value)
+  * DELETE an API key
+
+Marking an API key active deactivates whichever key was previously active, atomically -- there
+is always at most one active key. Any endpoint that would result in new traffic to the LLM
+(starting a new conversation, submitting input to one) fetches the active key from the database
+at the moment it is invoked; if none is active, that endpoint fails with HTTP/503 and a
+presentable error message rather than proceeding.
 
 ## Architecture
 
@@ -214,9 +242,9 @@ internally.
 
 ### Configuration
 
-The service itself needs to have two things
+The service itself needs to have one thing configured at deploy time:
 
-* Anthropic API key (This will be stored in the database later, but for now config)
 * JWT for user access (This will change later, but for now its fine)
 
-Both of these will be solved in runtime later, but for now they can be passed in.
+The Anthropic API key is *not* deploy-time config -- it is stored in the database and managed
+at runtime via the **API key** API described above.

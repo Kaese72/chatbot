@@ -67,20 +67,16 @@ func (c DeviceStoreConfig) Validate() error {
 	return nil
 }
 
-// AnthropicConfig holds the LLM provider configuration.
+// AnthropicConfig holds the LLM provider configuration that isn't a
+// secret. The API key itself is no longer configured here -- it is stored
+// in the database (see restmodels.APIKey / persistence.Persistence's
+// APIKey methods) and fetched fresh for every conversation turn.
 type AnthropicConfig struct {
-	// APIKey authenticates against the Anthropic API. Per the README this is
-	// a stopgap: "This will be stored in the database later, but for now
-	// config".
-	APIKey string `mapstructure:"api-key"`
 	// Model is the Claude model ID used for every conversation turn.
 	Model string `mapstructure:"model"`
 }
 
 func (c AnthropicConfig) Validate() error {
-	if c.APIKey == "" {
-		return errors.New("must supply anthropic API key")
-	}
 	if c.Model == "" {
 		return errors.New("must supply anthropic model")
 	}
@@ -161,7 +157,6 @@ func init() {
 	viper.BindEnv("device-store.jwt")
 
 	// Anthropic
-	viper.BindEnv("anthropic.api-key")
 	viper.BindEnv("anthropic.model")
 	viper.SetDefault("anthropic.model", "claude-opus-5")
 

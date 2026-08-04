@@ -29,6 +29,13 @@ var (
 	// released). Per the README, processing must stop immediately without
 	// writing anything further or returning any output to the user.
 	ErrLockLost = errors.New("processing lock was lost")
+	// ErrAPIKeyNotFound means no APIKey exists with the given ID.
+	ErrAPIKeyNotFound = errors.New("api key not found")
+	// ErrNoActiveAPIKey means no APIKey is currently marked active for the
+	// requested APIKeyType. Per the README's Configuration section, this is
+	// returned to the caller of any endpoint that would otherwise send a
+	// new request to the LLM.
+	ErrNoActiveAPIKey = errors.New("no active API key is configured")
 )
 
 // NewDialogEntry describes a DialogEntry to be appended to a conversation.
@@ -93,4 +100,37 @@ type Persistence interface {
 	// DialogEntries. Only permitted while Initiative is USER. Returns
 	// ErrConversationNotFound or ErrConversationNotAwaitingInput otherwise.
 	ForgetConversation(ctx context.Context, conversationID int64) error
+
+	// ListAPIKeys returns every configured APIKey, most recently updated
+	// first. The secret value is never included.
+	ListAPIKeys(ctx context.Context) ([]restmodels.APIKey, error)
+
+	// GetAPIKey returns a single APIKey by ID, or ErrAPIKeyNotFound. The
+	// secret value is never included.
+	GetAPIKey(ctx context.Context, id int64) (restmodels.APIKey, error)
+
+	// CreateAPIKey stores a new APIKey. If req.Active is true, every other
+	// APIKey is deactivated first, atomically, so at most one key is ever
+	// active at a time.
+	CreateAPIKey(ctx context.Context, req restmodels.NewAPIKeyRequest) (restmodels.APIKey, error)
+
+	// UpdateAPIKey applies a partial update to an existing APIKey; unset
+	// fields on req are left unchanged. Setting Active true deactivates
+	// every other APIKey first, atomically. Returns ErrAPIKeyNotFound if id
+	// doesn't exist.
+	UpdateAPIKey(ctx context.Context, id int64, req restmodels.UpdateAPIKeyRequest) (restmodels.APIKey, error)
+
+	// DeleteAPIKey removes an APIKey. Returns ErrAPIKeyNotFound if id
+	// doesn't exist.
+	DeleteAPIKey(ctx context.Context, id int64) error
+
+	// ActiveAPIKeyValue returns the secret value of the currently active
+	// APIKey for keyType, or ErrNoActiveAPIKey if none is active. This is
+	// the sole path by which the LLM client's credential reaches the rest
+	// of the service -- fetched fresh from the database for every
+	// conversation-starting/-continuing request, per the README's
+	// Configuration section, so adding, rotating, or deactivating a key
+	// takes effect on the very next request without restarting the
+	// service.
+	ActiveAPIKeyValue(ctx context.Context, keyType restmodels.APIKeyType) (string, error)
 }

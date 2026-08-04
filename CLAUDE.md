@@ -69,12 +69,25 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 | `EVENT_CONNECTIONSTRING` | — | yes |
 | `DEVICE_STORE_URL` | `http://device-store:8080` | no |
 | `DEVICE_STORE_JWT` | — | yes (stopgap -- see README's Configuration section; will move to per-user/dynamic credentials later) |
-| `ANTHROPIC_API_KEY` | — | yes (stopgap -- see README's Configuration section; will move to DB-stored config later) |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | no |
 | `LOCK_TIMEOUT_SECONDS` | `300` | no (the README-specified value) |
 | `LOCK_MAX_TOOL_LOOP_ITERATIONS` | `25` | no (not in the README; a bound on the step 6/7 tool-call loop so a misbehaving model can't hold a conversation's lock forever) |
 
 Viper maps dots/hyphens to underscores, same convention as the rest of the monorepo.
+
+**The Anthropic API key is database-backed config, not an environment variable.** It is stored
+in the `api_keys` table (`internal/persistence.Persistence`'s `*APIKey*` methods /
+`restmodels.APIKey`), managed via the `/chatbot-service/v0/api-keys` REST endpoints
+(`internal/restwebapp.WebApp.{List,Create,Get,Update,Delete}APIKey`), and fetched fresh by
+`internal/conversation.Service.New`/`Input` (via `persistence.Persistence.ActiveAPIKeyValue`)
+for every request that will actually talk to the LLM -- `internal/llm.Client` itself holds no
+credential, only the model ID; `RunTurn` takes the key as a parameter and builds a fresh
+Anthropic SDK client with it on every turn. `api_keys.active` is constrained to at most one row
+at a time by a generated-column unique index (`active_slot`, see `migrations/V002.sql`) in
+addition to the application-level "deactivate the others first" logic in
+`internal/persistence/mariadb`. `New`/`Input` return `persistence.ErrNoActiveAPIKey`, mapped to
+HTTP/503, if no key is active -- this fails fast before a conversation is created/flipped to
+`AGENT_IN_PROGRESS`, rather than leaving it stuck with no way to make progress.
 
 ## Development
 

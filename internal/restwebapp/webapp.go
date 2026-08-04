@@ -26,7 +26,9 @@ func NewWebApp(conversations *conversation.Service) *WebApp {
 // mapServiceError translates the sentinel errors internal/persistence
 // defines into the HTTP status codes the README's API section implies:
 // unknown conversation -> 404, "another query can not be added to that
-// conversation" / lock contention -> 409.
+// conversation" / lock contention -> 409, no active API key configured ->
+// 503 (the service cannot currently fulfill any request that talks to the
+// LLM, but the request itself was well-formed).
 func mapServiceError(err error) error {
 	switch {
 	case errors.Is(err, persistence.ErrConversationNotFound):
@@ -35,6 +37,10 @@ func mapServiceError(err error) error {
 		return huma.Error409Conflict(err.Error())
 	case errors.Is(err, persistence.ErrConversationLocked):
 		return huma.Error409Conflict(err.Error())
+	case errors.Is(err, persistence.ErrAPIKeyNotFound):
+		return huma.Error404NotFound(err.Error())
+	case errors.Is(err, persistence.ErrNoActiveAPIKey):
+		return huma.Error503ServiceUnavailable("no active Anthropic API key is configured; add one via POST /chatbot-service/v0/api-keys and mark it active, or PATCH an existing key to active:true")
 	default:
 		log.Error(err.Error(), map[string]interface{}{})
 		return huma.Error500InternalServerError("internal error")
@@ -109,6 +115,70 @@ func (app *WebApp) ForgetConversation(ctx context.Context, input *struct {
 	ConversationID int64 `path:"conversationID"`
 }) (*struct{}, error) {
 	if err := app.conversations.Forget(ctx, input.ConversationID); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct{}{}, nil
+}
+
+func (app *WebApp) ListAPIKeys(ctx context.Context, input *struct{}) (*struct {
+	Body restmodels.APIKeyList
+}, error) {
+	keys, err := app.conversations.ListAPIKeys(ctx)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.APIKeyList
+	}{Body: restmodels.APIKeyList{APIKeys: keys}}, nil
+}
+
+func (app *WebApp) CreateAPIKey(ctx context.Context, input *struct {
+	Body restmodels.NewAPIKeyRequest
+}) (*struct {
+	Body restmodels.APIKey
+}, error) {
+	key, err := app.conversations.CreateAPIKey(ctx, input.Body)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.APIKey
+	}{Body: key}, nil
+}
+
+func (app *WebApp) GetAPIKey(ctx context.Context, input *struct {
+	APIKeyID int64 `path:"apiKeyID"`
+}) (*struct {
+	Body restmodels.APIKey
+}, error) {
+	key, err := app.conversations.GetAPIKey(ctx, input.APIKeyID)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.APIKey
+	}{Body: key}, nil
+}
+
+func (app *WebApp) UpdateAPIKey(ctx context.Context, input *struct {
+	APIKeyID int64 `path:"apiKeyID"`
+	Body     restmodels.UpdateAPIKeyRequest
+}) (*struct {
+	Body restmodels.APIKey
+}, error) {
+	key, err := app.conversations.UpdateAPIKey(ctx, input.APIKeyID, input.Body)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &struct {
+		Body restmodels.APIKey
+	}{Body: key}, nil
+}
+
+func (app *WebApp) DeleteAPIKey(ctx context.Context, input *struct {
+	APIKeyID int64 `path:"apiKeyID"`
+}) (*struct{}, error) {
+	if err := app.conversations.DeleteAPIKey(ctx, input.APIKeyID); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &struct{}{}, nil

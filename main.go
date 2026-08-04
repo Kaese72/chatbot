@@ -34,7 +34,7 @@ func main() {
 
 	deviceStoreClient := devicestore.NewClient(config.Loaded.DeviceStore.URL, config.Loaded.DeviceStore.JWT)
 	dispatcher := llm.NewDispatcher(deviceStoreClient)
-	llmClient := llm.NewClient(config.Loaded.Anthropic.APIKey, config.Loaded.Anthropic.Model)
+	llmClient := llm.NewClient(config.Loaded.Anthropic.Model)
 
 	publisher, err := events.NewPublisher(config.Loaded.Event.ConnectionString)
 	if err != nil {
@@ -71,6 +71,12 @@ func main() {
 	huma.Post(api, "/chatbot-service/v0/conversations/{conversationID:[0-9]+}/input", webapp.InputConversation)
 	huma.Post(api, "/chatbot-service/v0/conversations/{conversationID:[0-9]+}/terminate", webapp.TerminateConversation)
 	huma.Post(api, "/chatbot-service/v0/conversations/{conversationID:[0-9]+}/forget", webapp.ForgetConversation)
+
+	huma.Get(api, "/chatbot-service/v0/api-keys", webapp.ListAPIKeys)
+	huma.Post(api, "/chatbot-service/v0/api-keys", webapp.CreateAPIKey)
+	huma.Get(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.GetAPIKey)
+	huma.Patch(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.UpdateAPIKey)
+	huma.Delete(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.DeleteAPIKey)
 
 	sse.Register(api, huma.Operation{
 		OperationID: "follow-conversation",

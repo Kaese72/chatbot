@@ -17,7 +17,9 @@ import (
 // conversation's processing lock (lockID) from the moment it's called
 // until it releases it just before returning, runs entirely on a detached
 // background goroutine, and is the only place that talks to the LLM.
-func (s *Service) process(ctx context.Context, conversationID int64, lockID string) {
+// apiKey is the active Anthropic API key fetched from the database by the
+// caller (New/Input) before this goroutine was started.
+func (s *Service) process(ctx context.Context, conversationID int64, lockID string, apiKey string) {
 	terminationCh, unsubscribe := s.terminations.Subscribe(conversationID)
 	defer unsubscribe()
 
@@ -58,15 +60,7 @@ mainLoop:
 			break mainLoop
 		}
 
-		message, err := s.llmClient.RunTurn(ctx, messages, func(index int64, block anthropic.ContentBlockUnion) error {
-			if perr := s.persistBlock(ctx, conversationID, lockID, block); perr != nil {
-				return perr
-			}
-			if isTerminated(terminationCh) {
-				return errTerminated
-			}
-			return nil
-		})
+		message, err := s.runTurnWithRetry(ctx, conversationID, lockID, apiKey, terminationCh, messages)
 		if err != nil {
 			if errors.Is(err, persistence.ErrLockLost) {
 				return

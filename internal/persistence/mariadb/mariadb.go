@@ -288,7 +288,187 @@ func (p *mariadbPersistence) ForgetConversation(ctx context.Context, conversatio
 	return tx.Commit()
 }
 
+func (p *mariadbPersistence) ListAPIKeys(ctx context.Context) ([]restmodels.APIKey, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, name, type, active, created, updated
+		FROM api_keys
+		ORDER BY updated DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := []restmodels.APIKey{}
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+func (p *mariadbPersistence) GetAPIKey(ctx context.Context, id int64) (restmodels.APIKey, error) {
+	row := p.db.QueryRowContext(ctx, `
+		SELECT id, name, type, active, created, updated
+		FROM api_keys WHERE id = ?
+	`, id)
+	k, err := scanAPIKey(row)
+	if err == sql.ErrNoRows {
+		return restmodels.APIKey{}, persistence.ErrAPIKeyNotFound
+	}
+	return k, err
+}
+
+func (p *mariadbPersistence) CreateAPIKey(ctx context.Context, req restmodels.NewAPIKeyRequest) (restmodels.APIKey, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+	defer tx.Rollback()
+
+	if req.Active {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET active = FALSE WHERE active = TRUE`); err != nil {
+			return restmodels.APIKey{}, err
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO api_keys (name, type, active, value)
+		VALUES (?, ?, ?, ?)
+	`, req.Name, req.Type, req.Active, req.Value)
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+
+	k, err := scanAPIKey(tx.QueryRowContext(ctx, `
+		SELECT id, name, type, active, created, updated FROM api_keys WHERE id = ?
+	`, id))
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return restmodels.APIKey{}, err
+	}
+	return k, nil
+}
+
+func (p *mariadbPersistence) UpdateAPIKey(ctx context.Context, id int64, req restmodels.UpdateAPIKeyRequest) (restmodels.APIKey, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+	defer tx.Rollback()
+
+	exists, err := apiKeyExists(ctx, tx, id)
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+	if !exists {
+		return restmodels.APIKey{}, persistence.ErrAPIKeyNotFound
+	}
+
+	// Deactivate whichever other key is currently active *before* applying
+	// this key's own fields, so a caller flipping this key active in the
+	// same request as a rename doesn't race against itself.
+	if req.Active != nil && *req.Active {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET active = FALSE WHERE active = TRUE AND id != ?`, id); err != nil {
+			return restmodels.APIKey{}, err
+		}
+	}
+
+	if req.Name != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET name = ? WHERE id = ?`, *req.Name, id); err != nil {
+			return restmodels.APIKey{}, err
+		}
+	}
+	if req.Value != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET value = ? WHERE id = ?`, *req.Value, id); err != nil {
+			return restmodels.APIKey{}, err
+		}
+	}
+	if req.Active != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET active = ? WHERE id = ?`, *req.Active, id); err != nil {
+			return restmodels.APIKey{}, err
+		}
+	}
+
+	k, err := scanAPIKey(tx.QueryRowContext(ctx, `
+		SELECT id, name, type, active, created, updated FROM api_keys WHERE id = ?
+	`, id))
+	if err != nil {
+		return restmodels.APIKey{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return restmodels.APIKey{}, err
+	}
+	return k, nil
+}
+
+func (p *mariadbPersistence) DeleteAPIKey(ctx context.Context, id int64) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return persistence.ErrAPIKeyNotFound
+	}
+	return nil
+}
+
+func (p *mariadbPersistence) ActiveAPIKeyValue(ctx context.Context, keyType restmodels.APIKeyType) (string, error) {
+	var value string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT value FROM api_keys WHERE type = ? AND active = TRUE
+	`, keyType).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", persistence.ErrNoActiveAPIKey
+	}
+	return value, err
+}
+
 // --- helpers ---
+
+func apiKeyExists(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM api_keys WHERE id = ?`, id).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// apiKeyRow is satisfied by both *sql.Row and *sql.Rows.
+type apiKeyRow interface {
+	Scan(dest ...any) error
+}
+
+func scanAPIKey(row apiKeyRow) (restmodels.APIKey, error) {
+	var (
+		k       restmodels.APIKey
+		typeStr string
+	)
+	if err := row.Scan(&k.ID, &k.Name, &typeStr, &k.Active, &k.Created, &k.Updated); err != nil {
+		return restmodels.APIKey{}, err
+	}
+	k.Type = restmodels.APIKeyType(typeStr)
+	return k, nil
+}
 
 func conversationExists(ctx context.Context, tx *sql.Tx, conversationID int64) (bool, error) {
 	var one int

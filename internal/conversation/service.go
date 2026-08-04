@@ -75,12 +75,21 @@ func (s *Service) ListDialogEntries(ctx context.Context, conversationID int64, a
 // immediately with the conversation in AGENT_IN_PROGRESS status; callers
 // watch progress via .../follow/{id}.
 func (s *Service) New(ctx context.Context, query string) (restmodels.Conversation, error) {
+	// Fetched up front, before anything is written to the database: per
+	// the README's Configuration section, any endpoint that would result
+	// in new traffic to the LLM must fail fast with a presentable error if
+	// no active key is configured, rather than creating a conversation
+	// that can never make progress.
+	apiKey, err := s.db.ActiveAPIKeyValue(ctx, restmodels.APIKeyTypeAnthropic)
+	if err != nil {
+		return restmodels.Conversation{}, err
+	}
 	lockID := uuid.NewString()
 	conv, err := s.db.BeginConversation(ctx, lockID, query)
 	if err != nil {
 		return restmodels.Conversation{}, err
 	}
-	go s.process(context.Background(), conv.ID, lockID)
+	go s.process(context.Background(), conv.ID, lockID, apiKey)
 	s.publishUpdated(conv.ID)
 	return conv, nil
 }
@@ -89,11 +98,17 @@ func (s *Service) New(ctx context.Context, query string) (restmodels.Conversatio
 // must currently hold the initiative (see persistence.ErrConversationNotAwaitingInput
 // / persistence.ErrConversationLocked).
 func (s *Service) Input(ctx context.Context, conversationID int64, query string) (restmodels.Conversation, error) {
+	// See the identical check in New: fail fast rather than flip the
+	// conversation to AGENT_IN_PROGRESS with no way to actually process it.
+	apiKey, err := s.db.ActiveAPIKeyValue(ctx, restmodels.APIKeyTypeAnthropic)
+	if err != nil {
+		return restmodels.Conversation{}, err
+	}
 	lockID := uuid.NewString()
 	if err := s.db.BeginInput(ctx, conversationID, lockID, query); err != nil {
 		return restmodels.Conversation{}, err
 	}
-	go s.process(context.Background(), conversationID, lockID)
+	go s.process(context.Background(), conversationID, lockID, apiKey)
 	s.publishUpdated(conversationID)
 	return s.db.GetConversation(ctx, conversationID)
 }
@@ -116,6 +131,33 @@ func (s *Service) Terminate(ctx context.Context, conversationID int64) error {
 // permitted while the user holds the initiative.
 func (s *Service) Forget(ctx context.Context, conversationID int64) error {
 	return s.db.ForgetConversation(ctx, conversationID)
+}
+
+// ListAPIKeys returns every configured APIKey. The secret value is never
+// included.
+func (s *Service) ListAPIKeys(ctx context.Context) ([]restmodels.APIKey, error) {
+	return s.db.ListAPIKeys(ctx)
+}
+
+// GetAPIKey returns a single APIKey by ID. The secret value is never
+// included.
+func (s *Service) GetAPIKey(ctx context.Context, id int64) (restmodels.APIKey, error) {
+	return s.db.GetAPIKey(ctx, id)
+}
+
+// CreateAPIKey stores a new APIKey.
+func (s *Service) CreateAPIKey(ctx context.Context, req restmodels.NewAPIKeyRequest) (restmodels.APIKey, error) {
+	return s.db.CreateAPIKey(ctx, req)
+}
+
+// UpdateAPIKey applies a partial update to an existing APIKey.
+func (s *Service) UpdateAPIKey(ctx context.Context, id int64, req restmodels.UpdateAPIKeyRequest) (restmodels.APIKey, error) {
+	return s.db.UpdateAPIKey(ctx, id, req)
+}
+
+// DeleteAPIKey removes an APIKey.
+func (s *Service) DeleteAPIKey(ctx context.Context, id int64) error {
+	return s.db.DeleteAPIKey(ctx, id)
 }
 
 // SubscribeUpdates registers an SSE connection's interest in

@@ -30,17 +30,17 @@ You act as your own authenticated user; every action you take through your tools
 
 Be concise. Confirm destructive or hard-to-reverse actions in plain language after you take them, but do not ask for permission before taking a routine, reversible action the user clearly asked for.`
 
-// Client sends conversation turns to the Anthropic Messages API.
+// Client sends conversation turns to the Anthropic Messages API. It holds
+// no credential of its own: per the README's Configuration section, the
+// active API key is fetched from the database and passed to RunTurn for
+// every conversation turn, so a key that is added, rotated, or deactivated
+// takes effect on the very next turn without restarting the service.
 type Client struct {
-	anthropicClient anthropic.Client
-	model           string
+	model string
 }
 
-func NewClient(apiKey string, model string) *Client {
-	return &Client{
-		anthropicClient: anthropic.NewClient(option.WithAPIKey(apiKey)),
-		model:           model,
-	}
+func NewClient(model string) *Client {
+	return &Client{model: model}
 }
 
 // BlockCallback is invoked once per completed content block, in the order
@@ -61,7 +61,7 @@ type BlockCallback func(index int64, block anthropic.ContentBlockUnion) error
 // (see restmodels.DialogEntryType) has no slot for thinking blocks, and
 // several Claude models think by default, so this must be an explicit
 // choice rather than left to the model's default.
-func (c *Client) RunTurn(ctx context.Context, messages []anthropic.MessageParam, onBlock BlockCallback) (anthropic.Message, error) {
+func (c *Client) RunTurn(ctx context.Context, apiKey string, messages []anthropic.MessageParam, onBlock BlockCallback) (anthropic.Message, error) {
 	params := anthropic.MessageNewParams{
 		Model:     c.model,
 		MaxTokens: maxTokens,
@@ -71,7 +71,8 @@ func (c *Client) RunTurn(ctx context.Context, messages []anthropic.MessageParam,
 		Thinking:  anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
 	}
 
-	stream := c.anthropicClient.Messages.NewStreaming(ctx, params)
+	anthropicClient := anthropic.NewClient(option.WithAPIKey(apiKey))
+	stream := anthropicClient.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
 
 	message := anthropic.Message{}
