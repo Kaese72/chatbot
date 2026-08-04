@@ -83,6 +83,22 @@ func (c AnthropicConfig) Validate() error {
 	return nil
 }
 
+// AuthConfig holds the parameters needed to verify the authentication
+// service's RS256-signed `use` tokens on every inbound request, per the
+// authentication service's README ("each service that needs authentication
+// ... needs the public key of the Authentication Service for signature
+// verification").
+type AuthConfig struct {
+	RSAPublicKeyPath string `mapstructure:"rsa-public-key-path"`
+}
+
+func (c AuthConfig) Validate() error {
+	if c.RSAPublicKeyPath == "" {
+		return errors.New("must supply auth RSA public key path")
+	}
+	return nil
+}
+
 // LockConfig holds the conversation-lock tuning parameters described in the
 // README's "Replica Conversation lock" section.
 type LockConfig struct {
@@ -111,6 +127,7 @@ type Config struct {
 	Event       EventConfig       `mapstructure:"event"`
 	DeviceStore DeviceStoreConfig `mapstructure:"device-store"`
 	Anthropic   AnthropicConfig   `mapstructure:"anthropic"`
+	Auth        AuthConfig        `mapstructure:"auth"`
 	Lock        LockConfig        `mapstructure:"lock"`
 }
 
@@ -125,6 +142,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Anthropic.Validate(); err != nil {
+		return err
+	}
+	if err := c.Auth.Validate(); err != nil {
 		return err
 	}
 	if err := c.Lock.Validate(); err != nil {
@@ -159,6 +179,9 @@ func init() {
 	// Anthropic
 	viper.BindEnv("anthropic.model")
 	viper.SetDefault("anthropic.model", "claude-opus-5")
+
+	// Auth (authentication service RS256 public key, for verifying `use` tokens)
+	viper.BindEnv("auth.rsa-public-key-path")
 
 	// Conversation locking
 	viper.BindEnv("lock.timeout-seconds")

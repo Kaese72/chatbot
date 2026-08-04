@@ -14,6 +14,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/restwebapp"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
+	"github.com/Kaese72/huemie-lib/middleware"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humamux"
 	"github.com/danielgtaylor/huma/v2/sse"
@@ -59,7 +60,14 @@ func main() {
 
 	webapp := restwebapp.NewWebApp(convService)
 
+	pubKey, err := middleware.LoadPublicKeyFromFile(config.Loaded.Auth.RSAPublicKeyPath)
+	if err != nil {
+		log.Error(err.Error(), map[string]interface{}{})
+		os.Exit(1)
+	}
+
 	router := mux.NewRouter()
+	router.Use(middleware.UseTokenMiddleware(pubKey, "/chatbot-service/openapi", "/chatbot-service/docs"))
 	humaConfig := huma.DefaultConfig("chatbot-service", "0.1.0")
 	humaConfig.OpenAPIPath = "/chatbot-service/openapi"
 	humaConfig.DocsPath = "/chatbot-service/docs"

@@ -242,9 +242,12 @@ internally.
 
 ### Configuration
 
-The service itself needs to have one thing configured at deploy time:
+The service itself needs to have the following configured at deploy time:
 
 * JWT for user access (This will change later, but for now its fine)
+* The authentication service's RSA public key, used to verify the `use` token on every inbound
+  request to this service's own REST API (same scheme as `device-store`: no endpoint is reachable
+  without a valid bearer token except the OpenAPI/docs routes).
 
 The Anthropic API key is *not* deploy-time config -- it is stored in the database and managed
 at runtime via the **API key** API described above.

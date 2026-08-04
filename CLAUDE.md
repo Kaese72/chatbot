@@ -57,6 +57,8 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 
 **Locking column names**: `conversations.lock_id` is the replica identifier the README calls "currently processed by what replica"; `locked_at` is the timestamp used for the 300-second-timeout takeover. The acquire/re-acquire SQL matches the README's "Replica Conversation lock" section verbatim.
 
+**Inbound auth is `huemie-lib/middleware.UseTokenMiddleware`, same as `device-store`.** Every `/chatbot-service/v0/...` route (conversations, api-keys, the SSE follow endpoint) requires a valid RS256 `use` token from the authentication service; only `/chatbot-service/openapi` and `/chatbot-service/docs` are exempt (mirrors `device-store`'s public router skip-list). The service verifies signatures only -- it holds the authentication service's RSA *public* key (`config.Loaded.Auth.RSAPublicKeyPath`), never a secret, and never calls back to the authentication service. There is deliberately no separate internal/unauthenticated router like `device-store-internal`: unlike device-store, nothing else in the cluster calls the chatbot's API on the bot's behalf, so every route goes through the one authenticated router.
+
 ## Configuration (Environment Variables)
 
 | Variable | Default | Required |
@@ -70,6 +72,7 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 | `DEVICE_STORE_URL` | `http://device-store:8080` | no |
 | `DEVICE_STORE_JWT` | — | yes (stopgap -- see README's Configuration section; will move to per-user/dynamic credentials later) |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | no |
+| `AUTH_RSA_PUBLIC_KEY_PATH` | — | yes (authentication service's RS256 public key, PEM/PKIX; same convention as `device-store`'s `AUTH_RSA_PUBLIC_KEY_PATH`) |
 | `LOCK_TIMEOUT_SECONDS` | `300` | no (the README-specified value) |
 | `LOCK_MAX_TOOL_LOOP_ITERATIONS` | `25` | no (not in the README; a bound on the step 6/7 tool-call loop so a misbehaving model can't hold a conversation's lock forever) |
 
@@ -109,6 +112,5 @@ Managed by Flyway via `Dockerfile.migrater`, same as every other service in this
 
 ## Not yet implemented (explicitly out of scope for this PoC pass)
 
-* No inbound authentication on the chatbot's own REST API -- the README's Configuration section only mentions a JWT the bot uses to call *other* services, not one it validates on its own endpoints. Add `huemie-lib/middleware.UseTokenMiddleware` here if/when that changes.
 * No automated tests yet.
-* No k8s manifests in `huemie-gitops-base` yet for this service (Deployment/Service/NetworkPolicy/migrater Job, plus a RabbitMQ NetworkPolicy ingress entry) -- needed before this can actually run in the cluster.
+* No k8s manifests in `huemie-gitops-base` yet for this service (Deployment/Service/NetworkPolicy/migrater Job, plus a RabbitMQ NetworkPolicy ingress entry, plus the `auth-rsa-verify-key` secret mount at `/etc/auth-pubkey/public.pem` that `device-store.yaml` already shows the pattern for) -- needed before this can actually run in the cluster.
