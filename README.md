@@ -163,6 +163,12 @@ externally until the next tool call fails to log in.
 per-request, etc.) once one exists -- this mechanism was designed to require zero changes to the
 authentication service, which was the point, but is not meant to be the permanent answer.
 
+### Status
+
+`GET /chatbot-service/v0/status` combines the API Key and Identity checks above into one call --
+body `{"identity": true|false, "api-key": true|false}` -- so a UI deciding whether it can offer to
+start a new conversation only has to make one request rather than checking both individually.
+
 ## Architecture
 
 ### Replica owns active dialog of conversation

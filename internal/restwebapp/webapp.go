@@ -208,6 +208,36 @@ func (app *WebApp) SetupIdentity(ctx context.Context, input *struct {
 	return &struct{}{}, nil
 }
 
+// GetStatus reports the combined readiness of the two things a
+// conversation needs to actually call tools and reach the LLM: an active
+// Anthropic API key and a configured chatbot identity. It exists so a UI
+// has a single call to make before offering to start a new conversation,
+// rather than needing to separately call IdentityStatus and list API keys.
+func (app *WebApp) GetStatus(ctx context.Context, input *struct{}) (*struct {
+	Body restmodels.ServiceStatus
+}, error) {
+	identityConfigured, err := app.identity.Status(ctx)
+	if err != nil {
+		log.Error(err.Error(), map[string]interface{}{})
+		return nil, huma.Error500InternalServerError("failed to query identity status")
+	}
+	keys, err := app.conversations.ListAPIKeys(ctx)
+	if err != nil {
+		log.Error(err.Error(), map[string]interface{}{})
+		return nil, huma.Error500InternalServerError("failed to query API key status")
+	}
+	hasActiveKey := false
+	for _, key := range keys {
+		if key.Type == restmodels.APIKeyTypeAnthropic && key.Active {
+			hasActiveKey = true
+			break
+		}
+	}
+	return &struct {
+		Body restmodels.ServiceStatus
+	}{Body: restmodels.ServiceStatus{Identity: identityConfigured, APIKey: hasActiveKey}}, nil
+}
+
 // IdentityStatus reports whether POST /identities/setup has been completed,
 // so a UI can decide whether to show onboarding, per the README's
 // architecture note on this mechanism.

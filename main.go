@@ -93,6 +93,7 @@ func main() {
 
 	huma.Post(api, "/chatbot-service/v0/identities/setup", webapp.SetupIdentity)
 	huma.Get(api, "/chatbot-service/v0/identities/status", webapp.IdentityStatus)
+	huma.Get(api, "/chatbot-service/v0/status", webapp.GetStatus)
 
 	sse.Register(api, huma.Operation{
 		OperationID: "follow-conversation",
