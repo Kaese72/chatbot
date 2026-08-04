@@ -582,6 +582,8 @@ func attachPayload(de *restmodels.DialogEntry, raw []byte) error {
 		de.UserInput = &p
 	case restmodels.DialogEntryTypeUserStop:
 		// No payload.
+	case restmodels.DialogEntryTypeAgentInitiativeReleased:
+		// No payload.
 	case restmodels.DialogEntryTypeAgentMessage:
 		var p restmodels.AgentMessagePayload
 		if err := json.Unmarshal(raw, &p); err != nil {

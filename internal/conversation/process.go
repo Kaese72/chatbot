@@ -153,6 +153,15 @@ mainLoop:
 		}
 	}
 
+	// Every path that reaches here (end_turn, an AGENT_ERROR already
+	// appended above, or the iteration-limit bailout) hands initiative back
+	// to the user via ReleaseLock below. Record that fact as a DialogEntry
+	// so a client can tell "it's your turn again" purely from the entry
+	// stream, without also polling GET /conversations/{id} for
+	// Conversation.Initiative/Status. Termination has its own marker
+	// (USER_STOP, in handleTermination) and doesn't reach this code path.
+	s.appendBestEffort(ctx, conversationID, lockID, initiativeReleasedEntry())
+
 	if err := s.db.ReleaseLock(ctx, conversationID, lockID); err != nil {
 		log.Error("failed to release conversation lock: "+err.Error(), map[string]interface{}{"conversation-id": conversationID})
 	}
@@ -245,5 +254,13 @@ func agentErrorEntry(message string) persistence.NewDialogEntry {
 		Type:       restmodels.DialogEntryTypeAgentError,
 		Initiative: restmodels.InitiativeAgent,
 		Payload:    restmodels.AgentErrorPayload{Message: message},
+	}
+}
+
+func initiativeReleasedEntry() persistence.NewDialogEntry {
+	return persistence.NewDialogEntry{
+		Type:       restmodels.DialogEntryTypeAgentInitiativeReleased,
+		Initiative: restmodels.InitiativeAgent,
+		Payload:    struct{}{},
 	}
 }

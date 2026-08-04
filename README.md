@@ -82,6 +82,16 @@ The **DialogEntry** types can be one of the following
 * AGENT_DEVICE_CAPABILITY_TRIGGER_RESPONSE
 * AGENT_GROUP_CAPABILITY_TRIGGER_CALL
 * AGENT_GROUP_CAPABILITY_TRIGGER_RESPONSE
+* AGENT_INITIATIVE_RELEASED
+
+AGENT_INITIATIVE_RELEASED carries no payload of its own -- its presence in the stream *is* the
+information: the agent's processing for this turn has finished (however it finished: a normal
+answer, an error, or hitting the tool-loop iteration limit) and initiative is back with the user.
+It exists so a client can tell "it's your turn again" purely by watching the DialogEntry stream
+(e.g. via `.../follow/{id}`), without also having to poll `GET /conversations/{id}` for
+`Conversation.Initiative`/`Status` after every entry. USER_STOP already serves the same purpose
+for the termination case, so AGENT_INITIATIVE_RELEASED is never emitted alongside it -- exactly
+one of the two always marks the end of a turn.
 
 Currently A LOT goes into the AGENT_GENERIC_TOOL_CALL, where we simply record the name of the
 tool and the input+output as text blobs. For all other *types*, we expect all information

@@ -44,6 +44,16 @@ const (
 	// DialogEntryTypeAgentGroupCapabilityTriggerResponse is the structured
 	// result of a group capability trigger.
 	DialogEntryTypeAgentGroupCapabilityTriggerResponse DialogEntryType = "AGENT_GROUP_CAPABILITY_TRIGGER_RESPONSE"
+	// DialogEntryTypeAgentInitiativeReleased records that agent processing
+	// for this turn finished (normally, on error, or by hitting the
+	// tool-loop iteration limit) and initiative was handed back to the
+	// user. Unlike the other AGENT_* types it carries no payload -- its
+	// presence in the stream is the fact being recorded. It is what lets a
+	// client tell "it's your turn again" purely from the DialogEntry
+	// stream, without separately polling Conversation.Initiative/Status.
+	// Termination has its own equivalent marker, DialogEntryTypeUserStop,
+	// and this type is never used for that case.
+	DialogEntryTypeAgentInitiativeReleased DialogEntryType = "AGENT_INITIATIVE_RELEASED"
 )
 
 // UserInputPayload backs DialogEntryTypeUserInput.
