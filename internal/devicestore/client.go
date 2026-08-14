@@ -96,6 +96,15 @@ type Group struct {
 	DeviceIds        []int             `json:"device-ids"`
 }
 
+// GroupSearchResult mirrors device-store's restmodels.GroupSearchResult, a
+// single match from its fuzzy group-name search endpoint. Relevance is a
+// similarity score in [0,1] (1 being an exact match), formatted as a string.
+type GroupSearchResult struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Relevance string `json:"relevance"`
+}
+
 // CapabilityArgs is the free-form argument object passed through to a
 // device or group capability trigger.
 type CapabilityArgs map[string]any
@@ -154,6 +163,17 @@ func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
 		}
 		offset += pageLimit
 	}
+}
+
+// SearchGroups fuzzy-searches device-store for groups by name, returning up
+// to limit results ordered from best to worst match.
+func (c *Client) SearchGroups(ctx context.Context, query string, limit int) ([]GroupSearchResult, error) {
+	path := fmt.Sprintf("/device-store/v0/groups/search?q=%s&limit=%d", url.QueryEscape(query), limit)
+	results := []GroupSearchResult{}
+	if err := c.getJSON(ctx, path, &results); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // TriggerDeviceCapability invokes a device capability trigger.

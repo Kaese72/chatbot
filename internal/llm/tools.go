@@ -18,6 +18,7 @@ const (
 	ToolListGroups              = "list_groups"
 	ToolTriggerDeviceCapability = "trigger_device_capability"
 	ToolTriggerGroupCapability  = "trigger_group_capability"
+	ToolFuzzyFindGroup          = "fuzzy_find_group"
 )
 
 // ToolKind classifies a tool call for DialogEntry persistence purposes.
@@ -62,6 +63,13 @@ type GroupCapabilityTriggerInput struct {
 	GroupID    int             `json:"group_id"`
 	Capability string          `json:"capability"`
 	Args       json.RawMessage `json:"args,omitempty"`
+}
+
+// FuzzyFindGroupInput is the JSON shape the fuzzy_find_group tool accepts,
+// per its schema in ToolDefinitions.
+type FuzzyFindGroupInput struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
 }
 
 // ToolDefinitions is the fixed set of tools offered to the LLM on every
@@ -126,6 +134,23 @@ func ToolDefinitions() []anthropic.ToolUnionParam {
 					},
 				},
 				Required: []string{"group_id", "capability"},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolFuzzyFindGroup,
+			Description: anthropic.String("Fuzzy-search for a group by name, returning the best-matching groups ordered from best to worst match, each with its numeric ID and a relevance score. Prefer this over list_groups when the user refers to a group by name rather than by ID, or when the name they gave might be misspelled, partial, or approximate -- it is a faster and more reliable way to identify which group they mean than listing every group and matching names yourself."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "The group name (or fragment of it) to search for, as given by the user. Does not need to be an exact match.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of results to return. Defaults to 10 if omitted.",
+					},
+				},
+				Required: []string{"query"},
 			},
 			// A cache_control breakpoint on the last tool definition covers
 			// the whole (fixed, identical-every-call) tools array -- see

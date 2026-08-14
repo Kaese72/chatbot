@@ -48,6 +48,28 @@ func (d *Dispatcher) Dispatch(ctx context.Context, name string, input json.RawMe
 		}
 		return true, string(body)
 
+	case ToolFuzzyFindGroup:
+		var in FuzzyFindGroupInput
+		if err := json.Unmarshal(input, &in); err != nil {
+			return false, fmt.Sprintf("invalid tool input: %s", err.Error())
+		}
+		if in.Query == "" {
+			return false, "query must not be empty"
+		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 10
+		}
+		results, err := d.deviceStore.SearchGroups(ctx, in.Query, limit)
+		if err != nil {
+			return false, fmt.Sprintf("failed to search groups: %s", err.Error())
+		}
+		body, err := json.Marshal(results)
+		if err != nil {
+			return false, fmt.Sprintf("failed to encode search results: %s", err.Error())
+		}
+		return true, string(body)
+
 	case ToolTriggerDeviceCapability:
 		var in DeviceCapabilityTriggerInput
 		if err := json.Unmarshal(input, &in); err != nil {
