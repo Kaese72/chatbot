@@ -18,7 +18,17 @@ dialog. You start a conversation with a query, the chatbot does what it does, du
 query can not be added to *that* conversation. However, the user should be able to terminate
 any such actions at any time.
 
-Conversations are global, meaning that all users can see all conversations. No privacy here.
+Conversations are private to the user that started them. The owner is the authentication-service
+user ID (the `id` claim) of the caller's use-token, stored in `conversations.owner_id`. Every
+conversation endpoint, including the SSE follow stream, only ever sees the caller's own
+conversations: listing returns only theirs, and a conversation owned by somebody else is
+indistinguishable from one that doesn't exist (HTTP/404), so its existence isn't leaked either.
+This also covers terminate and forget, so one user can't stop or delete another's conversation.
+
+Conversations created before ownership was introduced belonged to nobody, and were deleted by
+`migrations/V006.sql`.
+
+The API keys and the bot's identity are *not* per-user; they remain shared, service-wide configuration.
 
 ### Conversation
 

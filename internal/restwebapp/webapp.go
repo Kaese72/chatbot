@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Kaese72/authentication/usertoken"
 	"github.com/Kaese72/chatbot/internal/conversation"
 	"github.com/Kaese72/chatbot/internal/identity"
 	"github.com/Kaese72/chatbot/internal/persistence"
@@ -26,9 +27,21 @@ func NewWebApp(conversations *conversation.Service, identity *identity.Service) 
 	return &WebApp{conversations: conversations, identity: identity}
 }
 
+// callerID returns the authenticated user's ID, which the authentication
+// service's usertoken.Middleware places in the request context. Every conversation handler needs
+// it, since conversations are private to the user that started them.
+func callerID(ctx context.Context) (int64, error) {
+	id, ok := usertoken.UserID(ctx)
+	if !ok {
+		return 0, huma.Error401Unauthorized("missing or invalid bearer token")
+	}
+	return id, nil
+}
+
 // mapServiceError translates the sentinel errors internal/persistence
 // defines into the HTTP status codes the README's API section implies:
-// unknown conversation -> 404, "another query can not be added to that
+// unknown conversation (or one owned by another user, deliberately
+// indistinguishable so existence isn't leaked) -> 404, "another query can not be added to that
 // conversation" / lock contention -> 409, no active API key configured ->
 // 503 (the service cannot currently fulfill any request that talks to the
 // LLM, but the request itself was well-formed).
@@ -53,7 +66,11 @@ func mapServiceError(err error) error {
 func (app *WebApp) ListConversations(ctx context.Context, input *struct{}) (*struct {
 	Body restmodels.ConversationList
 }, error) {
-	conversations, err := app.conversations.ListConversations(ctx)
+	ownerID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conversations, err := app.conversations.ListConversations(ctx, ownerID)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -67,7 +84,11 @@ func (app *WebApp) NewConversation(ctx context.Context, input *struct {
 }) (*struct {
 	Body restmodels.Conversation
 }, error) {
-	conv, err := app.conversations.New(ctx, input.Body.Query)
+	ownerID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := app.conversations.New(ctx, ownerID, input.Body.Query)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -81,7 +102,11 @@ func (app *WebApp) GetConversation(ctx context.Context, input *struct {
 }) (*struct {
 	Body restmodels.Conversation
 }, error) {
-	conv, err := app.conversations.GetConversation(ctx, input.ConversationID)
+	ownerID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := app.conversations.GetConversation(ctx, ownerID, input.ConversationID)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -96,7 +121,11 @@ func (app *WebApp) InputConversation(ctx context.Context, input *struct {
 }) (*struct {
 	Body restmodels.Conversation
 }, error) {
-	conv, err := app.conversations.Input(ctx, input.ConversationID, input.Body.Query)
+	ownerID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := app.conversations.Input(ctx, ownerID, input.ConversationID, input.Body.Query)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -108,7 +137,11 @@ func (app *WebApp) InputConversation(ctx context.Context, input *struct {
 func (app *WebApp) TerminateConversation(ctx context.Context, input *struct {
 	ConversationID int64 `path:"conversationID"`
 }) (*struct{}, error) {
-	if err := app.conversations.Terminate(ctx, input.ConversationID); err != nil {
+	ownerID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := app.conversations.Terminate(ctx, ownerID, input.ConversationID); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &struct{}{}, nil
@@ -117,7 +150,11 @@ func (app *WebApp) TerminateConversation(ctx context.Context, input *struct {
 func (app *WebApp) ForgetConversation(ctx context.Context, input *struct {
 	ConversationID int64 `path:"conversationID"`
 }) (*struct{}, error) {
-	if err := app.conversations.Forget(ctx, input.ConversationID); err != nil {
+	ownerID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := app.conversations.Forget(ctx, ownerID, input.ConversationID); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &struct{}{}, nil
@@ -190,7 +227,7 @@ func (app *WebApp) DeleteAPIKey(ctx context.Context, input *struct {
 // SetupIdentity creates the chatbot's own user in the authentication
 // service and saves it as the identity every subsequent tool call
 // authenticates as. It reuses the caller's own bearer token (already
-// validated by the router's UseTokenMiddleware) to authorize the
+// validated by the router's usertoken.Middleware) to authorize the
 // authentication-service's POST /users call, so no additional privilege
 // beyond "some authenticated user requested this" is required or checked.
 func (app *WebApp) SetupIdentity(ctx context.Context, input *struct {

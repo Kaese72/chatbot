@@ -55,29 +55,35 @@ type NewDialogEntry struct {
 
 // Persistence is the storage contract the rest of the service depends on.
 type Persistence interface {
-	// ListConversations returns every conversation, most recently updated
-	// first.
-	ListConversations(ctx context.Context) ([]restmodels.Conversation, error)
+	// Conversations are private to their owner (the authentication-service
+	// user that started them). Every method below that takes an ownerID only
+	// ever sees or touches that user's conversations: a conversation owned by
+	// somebody else is indistinguishable from one that doesn't exist, and is
+	// reported as ErrConversationNotFound.
+
+	// ListConversations returns every conversation owned by ownerID, most
+	// recently updated first.
+	ListConversations(ctx context.Context, ownerID int64) ([]restmodels.Conversation, error)
 
 	// GetConversation returns a single conversation by ID, or
-	// ErrConversationNotFound.
-	GetConversation(ctx context.Context, conversationID int64) (restmodels.Conversation, error)
+	// ErrConversationNotFound if it doesn't exist or isn't owned by ownerID.
+	GetConversation(ctx context.Context, ownerID int64, conversationID int64) (restmodels.Conversation, error)
 
-	// BeginConversation creates a brand new conversation already locked by
-	// lockID with Initiative AGENT, and records the initial USER_INPUT
-	// DialogEntry, atomically.
-	BeginConversation(ctx context.Context, lockID string, query string) (restmodels.Conversation, error)
+	// BeginConversation creates a brand new conversation owned by ownerID,
+	// already locked by lockID with Initiative AGENT, and records the initial
+	// USER_INPUT DialogEntry, atomically.
+	BeginConversation(ctx context.Context, ownerID int64, lockID string, query string) (restmodels.Conversation, error)
 
 	// BeginInput atomically: (1) transitions an existing conversation's
 	// Initiative from USER to AGENT, refusing if it isn't currently USER
-	// (ErrConversationNotAwaitingInput) or doesn't exist
-	// (ErrConversationNotFound); (2) acquires the processing lock for
+	// (ErrConversationNotAwaitingInput) or doesn't exist / isn't owned by
+	// ownerID (ErrConversationNotFound); (2) acquires the processing lock for
 	// lockID, refusing if another replica already holds an unexpired lock
 	// (ErrConversationLocked); (3) records the USER_INPUT DialogEntry.
 	// Mirrors the README's "Replica Conversation lock" section: the
 	// initiative is changed first, then the lock is acquired within that
 	// same transaction.
-	BeginInput(ctx context.Context, conversationID int64, lockID string, query string) error
+	BeginInput(ctx context.Context, ownerID int64, conversationID int64, lockID string, query string) error
 
 	// ReacquireLockAndAppend atomically re-acquires the processing lock for
 	// lockID and appends a single DialogEntry, per the README's "must start
@@ -99,12 +105,18 @@ type Persistence interface {
 	// ID order. Pass afterID == 0 for the full history, or a specific ID to
 	// fetch only entries after it (used by the follow/SSE endpoint and to
 	// resume delivery after a reconnect).
+	//
+	// Deliberately NOT owner-scoped: it is also what the background
+	// processing loop reads its history with, which has no calling user.
+	// Callers acting on behalf of a user must establish ownership first via
+	// GetConversation.
 	ListDialogEntries(ctx context.Context, conversationID int64, afterID int64) ([]restmodels.DialogEntry, error)
 
 	// ForgetConversation deletes a conversation and all of its
 	// DialogEntries. Only permitted while Initiative is USER. Returns
-	// ErrConversationNotFound or ErrConversationNotAwaitingInput otherwise.
-	ForgetConversation(ctx context.Context, conversationID int64) error
+	// ErrConversationNotFound (missing, or not owned by ownerID) or
+	// ErrConversationNotAwaitingInput otherwise.
+	ForgetConversation(ctx context.Context, ownerID int64, conversationID int64) error
 
 	// ListAPIKeys returns every configured APIKey, most recently updated
 	// first. The secret value is never included.

@@ -58,15 +58,25 @@ func NewService(
 	}
 }
 
-func (s *Service) ListConversations(ctx context.Context) ([]restmodels.Conversation, error) {
-	return s.db.ListConversations(ctx)
+// Conversations are private to the user that started them: every method below
+// that takes an ownerID only ever sees or acts on that user's conversations,
+// and a conversation owned by somebody else is reported exactly like one that
+// doesn't exist (persistence.ErrConversationNotFound).
+
+func (s *Service) ListConversations(ctx context.Context, ownerID int64) ([]restmodels.Conversation, error) {
+	return s.db.ListConversations(ctx, ownerID)
 }
 
-func (s *Service) GetConversation(ctx context.Context, conversationID int64) (restmodels.Conversation, error) {
-	return s.db.GetConversation(ctx, conversationID)
+func (s *Service) GetConversation(ctx context.Context, ownerID int64, conversationID int64) (restmodels.Conversation, error) {
+	return s.db.GetConversation(ctx, ownerID, conversationID)
 }
 
-func (s *Service) ListDialogEntries(ctx context.Context, conversationID int64, afterID int64) ([]restmodels.DialogEntry, error) {
+// ListDialogEntries returns conversationID's DialogEntries after afterID,
+// but only if ownerID owns the conversation.
+func (s *Service) ListDialogEntries(ctx context.Context, ownerID int64, conversationID int64, afterID int64) ([]restmodels.DialogEntry, error) {
+	if _, err := s.db.GetConversation(ctx, ownerID, conversationID); err != nil {
+		return nil, err
+	}
 	return s.db.ListDialogEntries(ctx, conversationID, afterID)
 }
 
@@ -74,7 +84,7 @@ func (s *Service) ListDialogEntries(ctx context.Context, conversationID int64, a
 // happens on a detached background goroutine so the HTTP request returns
 // immediately with the conversation in AGENT_IN_PROGRESS status; callers
 // watch progress via .../follow/{id}.
-func (s *Service) New(ctx context.Context, query string) (restmodels.Conversation, error) {
+func (s *Service) New(ctx context.Context, ownerID int64, query string) (restmodels.Conversation, error) {
 	// Fetched up front, before anything is written to the database: per
 	// the README's Configuration section, any endpoint that would result
 	// in new traffic to the LLM must fail fast with a presentable error if
@@ -85,7 +95,7 @@ func (s *Service) New(ctx context.Context, query string) (restmodels.Conversatio
 		return restmodels.Conversation{}, err
 	}
 	lockID := uuid.NewString()
-	conv, err := s.db.BeginConversation(ctx, lockID, query)
+	conv, err := s.db.BeginConversation(ctx, ownerID, lockID, query)
 	if err != nil {
 		return restmodels.Conversation{}, err
 	}
@@ -97,7 +107,7 @@ func (s *Service) New(ctx context.Context, query string) (restmodels.Conversatio
 // Input submits a follow-up query to an existing conversation. The caller
 // must currently hold the initiative (see persistence.ErrConversationNotAwaitingInput
 // / persistence.ErrConversationLocked).
-func (s *Service) Input(ctx context.Context, conversationID int64, query string) (restmodels.Conversation, error) {
+func (s *Service) Input(ctx context.Context, ownerID int64, conversationID int64, query string) (restmodels.Conversation, error) {
 	// See the identical check in New: fail fast rather than flip the
 	// conversation to AGENT_IN_PROGRESS with no way to actually process it.
 	apiKey, err := s.db.ActiveAPIKeyValue(ctx, restmodels.APIKeyTypeAnthropic)
@@ -105,20 +115,21 @@ func (s *Service) Input(ctx context.Context, conversationID int64, query string)
 		return restmodels.Conversation{}, err
 	}
 	lockID := uuid.NewString()
-	if err := s.db.BeginInput(ctx, conversationID, lockID, query); err != nil {
+	if err := s.db.BeginInput(ctx, ownerID, conversationID, lockID, query); err != nil {
 		return restmodels.Conversation{}, err
 	}
 	go s.process(context.Background(), conversationID, lockID, apiKey)
 	s.publishUpdated(conversationID)
-	return s.db.GetConversation(ctx, conversationID)
+	return s.db.GetConversation(ctx, ownerID, conversationID)
 }
 
 // Terminate requests that any agent deliberation currently in progress for
 // conversationID stop as soon as possible. It publishes a RabbitMQ event
 // that every replica receives; only the replica (if any) actually
 // processing the conversation will act on it.
-func (s *Service) Terminate(ctx context.Context, conversationID int64) error {
-	if _, err := s.db.GetConversation(ctx, conversationID); err != nil {
+func (s *Service) Terminate(ctx context.Context, ownerID int64, conversationID int64) error {
+	// Ownership check: without it any user could stop anyone else's turn.
+	if _, err := s.db.GetConversation(ctx, ownerID, conversationID); err != nil {
 		return err
 	}
 	return s.publisher.Publish(eventmodels.ConversationEvent{
@@ -129,8 +140,8 @@ func (s *Service) Terminate(ctx context.Context, conversationID int64) error {
 
 // Forget permanently deletes a conversation and its DialogEntries. Only
 // permitted while the user holds the initiative.
-func (s *Service) Forget(ctx context.Context, conversationID int64) error {
-	return s.db.ForgetConversation(ctx, conversationID)
+func (s *Service) Forget(ctx context.Context, ownerID int64, conversationID int64) error {
+	return s.db.ForgetConversation(ctx, ownerID, conversationID)
 }
 
 // ListAPIKeys returns every configured APIKey. The secret value is never

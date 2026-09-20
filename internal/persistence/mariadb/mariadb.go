@@ -34,12 +34,13 @@ func NewMariadbPersistence(conf config.DatabaseConfig, lockTimeoutSeconds int) (
 	return &mariadbPersistence{db: db, lockTimeoutSeconds: lockTimeoutSeconds}, nil
 }
 
-func (p *mariadbPersistence) ListConversations(ctx context.Context) ([]restmodels.Conversation, error) {
+func (p *mariadbPersistence) ListConversations(ctx context.Context, ownerID int64) ([]restmodels.Conversation, error) {
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT id, status, initiative, name, lock_id, created, updated
 		FROM conversations
+		WHERE owner_id = ?
 		ORDER BY updated DESC
-	`)
+	`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -56,11 +57,11 @@ func (p *mariadbPersistence) ListConversations(ctx context.Context) ([]restmodel
 	return conversations, rows.Err()
 }
 
-func (p *mariadbPersistence) GetConversation(ctx context.Context, conversationID int64) (restmodels.Conversation, error) {
+func (p *mariadbPersistence) GetConversation(ctx context.Context, ownerID int64, conversationID int64) (restmodels.Conversation, error) {
 	row := p.db.QueryRowContext(ctx, `
 		SELECT id, status, initiative, name, lock_id, created, updated
-		FROM conversations WHERE id = ?
-	`, conversationID)
+		FROM conversations WHERE id = ? AND owner_id = ?
+	`, conversationID, ownerID)
 	c, err := scanConversation(row)
 	if err == sql.ErrNoRows {
 		return restmodels.Conversation{}, persistence.ErrConversationNotFound
@@ -68,7 +69,7 @@ func (p *mariadbPersistence) GetConversation(ctx context.Context, conversationID
 	return c, err
 }
 
-func (p *mariadbPersistence) BeginConversation(ctx context.Context, lockID string, query string) (restmodels.Conversation, error) {
+func (p *mariadbPersistence) BeginConversation(ctx context.Context, ownerID int64, lockID string, query string) (restmodels.Conversation, error) {
 	name := query
 	if len(name) > 255 {
 		name = name[:255]
@@ -81,9 +82,9 @@ func (p *mariadbPersistence) BeginConversation(ctx context.Context, lockID strin
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO conversations (status, initiative, name, lock_id, locked_at)
-		VALUES ('AGENT_IN_PROGRESS', 'AGENT', ?, ?, NOW(6))
-	`, name, lockID)
+		INSERT INTO conversations (owner_id, status, initiative, name, lock_id, locked_at)
+		VALUES (?, 'AGENT_IN_PROGRESS', 'AGENT', ?, ?, NOW(6))
+	`, ownerID, name, lockID)
 	if err != nil {
 		return restmodels.Conversation{}, err
 	}
@@ -103,10 +104,10 @@ func (p *mariadbPersistence) BeginConversation(ctx context.Context, lockID strin
 	if err := tx.Commit(); err != nil {
 		return restmodels.Conversation{}, err
 	}
-	return p.GetConversation(ctx, conversationID)
+	return p.GetConversation(ctx, ownerID, conversationID)
 }
 
-func (p *mariadbPersistence) BeginInput(ctx context.Context, conversationID int64, lockID string, query string) error {
+func (p *mariadbPersistence) BeginInput(ctx context.Context, ownerID int64, conversationID int64, lockID string, query string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -119,8 +120,8 @@ func (p *mariadbPersistence) BeginInput(ctx context.Context, conversationID int6
 	// to AGENT first" guard from the README, and it also rejects
 	// concurrent double-submission of input for the same conversation.
 	initiativeResult, err := tx.ExecContext(ctx, `
-		UPDATE conversations SET initiative = 'AGENT' WHERE id = ? AND initiative = 'USER'
-	`, conversationID)
+		UPDATE conversations SET initiative = 'AGENT' WHERE id = ? AND owner_id = ? AND initiative = 'USER'
+	`, conversationID, ownerID)
 	if err != nil {
 		return err
 	}
@@ -129,7 +130,7 @@ func (p *mariadbPersistence) BeginInput(ctx context.Context, conversationID int6
 		return err
 	}
 	if affected == 0 {
-		exists, err := conversationExists(ctx, tx, conversationID)
+		exists, err := conversationExists(ctx, tx, ownerID, conversationID)
 		if err != nil {
 			return err
 		}
@@ -259,7 +260,7 @@ func (p *mariadbPersistence) ListDialogEntries(ctx context.Context, conversation
 	return entries, rows.Err()
 }
 
-func (p *mariadbPersistence) ForgetConversation(ctx context.Context, conversationID int64) error {
+func (p *mariadbPersistence) ForgetConversation(ctx context.Context, ownerID int64, conversationID int64) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -267,7 +268,7 @@ func (p *mariadbPersistence) ForgetConversation(ctx context.Context, conversatio
 	defer tx.Rollback()
 
 	var initiative string
-	err = tx.QueryRowContext(ctx, `SELECT initiative FROM conversations WHERE id = ? FOR UPDATE`, conversationID).Scan(&initiative)
+	err = tx.QueryRowContext(ctx, `SELECT initiative FROM conversations WHERE id = ? AND owner_id = ? FOR UPDATE`, conversationID, ownerID).Scan(&initiative)
 	if err == sql.ErrNoRows {
 		return persistence.ErrConversationNotFound
 	}
@@ -511,9 +512,11 @@ func scanAPIKey(row apiKeyRow) (restmodels.APIKey, error) {
 	return k, nil
 }
 
-func conversationExists(ctx context.Context, tx *sql.Tx, conversationID int64) (bool, error) {
+// conversationExists reports whether conversationID exists *and is owned by
+// ownerID*; someone else's conversation is treated as nonexistent.
+func conversationExists(ctx context.Context, tx *sql.Tx, ownerID int64, conversationID int64) (bool, error) {
 	var one int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM conversations WHERE id = ?`, conversationID).Scan(&one)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM conversations WHERE id = ? AND owner_id = ?`, conversationID, ownerID).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

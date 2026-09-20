@@ -1,5 +1,7 @@
 filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
 filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
+github.com/Kaese72/authentication v0.0.4 h1:IjE8B3EPGPzzfLXHorKhPLOb2xT2Bz1nz5E/z/Fn8V4=
+github.com/Kaese72/authentication v0.0.4/go.mod h1:YMcnLWcqkd69gNRpE6hDG6MpQ1CgszRr3umh2/QkeUU=
 github.com/Kaese72/huemie-lib v0.0.6 h1:9Rclgu5008r13ymW9ffo7C+GGhWZoxvXDsWQ1NmMghw=
 github.com/Kaese72/huemie-lib v0.0.6/go.mod h1:iq14glyPZmZuCb9dEgZ1aOHnjf4nTHtuHXABhVB6WnI=
 github.com/anthropics/anthropic-sdk-go v1.61.0 h1:JRTnm1tPqn5xo1xd1zfrcFDlcoWXVMvV1K68YmhpZKw=
