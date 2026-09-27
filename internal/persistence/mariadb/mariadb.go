@@ -7,13 +7,35 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Kaese72/chatbot/internal/config"
 	"github.com/Kaese72/chatbot/internal/persistence"
 	"github.com/Kaese72/chatbot/restmodels"
+	// aliased: ListConversations (below) builds its SQL as a local "query"
+	// variable, which would otherwise shadow the package.
+	libquery "github.com/Kaese72/huemie-lib/query"
 	_ "github.com/go-sql-driver/mysql"
 )
+
+// conversationFilters defines what filters are available for the
+// conversations model. owner_id is deliberately never included here - it is
+// always applied as a separate, non-user-controlled clause in
+// ListConversations, so a caller can never widen or influence the ownership
+// scope through a filter (see persistence.Persistence's privacy invariant).
+var conversationFilters = map[string]libquery.FieldSpec{
+	"status":     libquery.Merge(libquery.EqualsOperator("status")),
+	"initiative": libquery.Merge(libquery.EqualsOperator("initiative")),
+	"name":       libquery.Merge(libquery.TextOperators("name")),
+}
+
+// conversationSortFields are the fields "sort" may reference for
+// ListConversations.
+var conversationSortFields = map[string]string{
+	"created": "created",
+	"updated": "updated",
+}
 
 type mariadbPersistence struct {
 	db                 *sql.DB
@@ -34,15 +56,61 @@ func NewMariadbPersistence(conf config.DatabaseConfig, lockTimeoutSeconds int) (
 	return &mariadbPersistence{db: db, lockTimeoutSeconds: lockTimeoutSeconds}, nil
 }
 
-func (p *mariadbPersistence) ListConversations(ctx context.Context, ownerID int64) ([]restmodels.Conversation, error) {
-	rows, err := p.db.QueryContext(ctx, `
-		SELECT id, status, initiative, name, lock_id, created, updated
-		FROM conversations
-		WHERE owner_id = ?
-		ORDER BY updated DESC
-	`, ownerID)
+// paginationClause returns the SQL "LIMIT ? OFFSET ?" fragment and its
+// arguments for the given pagination. A zero Limit means unbounded, in which
+// case no clause is applied.
+func paginationClause(pagination libquery.Pagination) (string, []any) {
+	if pagination.Limit <= 0 {
+		return "", nil
+	}
+	offset := pagination.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	return " LIMIT ? OFFSET ?", []any{pagination.Limit, offset}
+}
+
+// countConversations executes "SELECT COUNT(*) FROM conversations WHERE
+// <whereClause>" and returns the total number of matching rows, ignoring
+// pagination.
+func countConversations(ctx context.Context, db *sql.DB, whereClause string, args []any) (int, error) {
+	q := "SELECT COUNT(*) FROM conversations"
+	if whereClause != "" {
+		q += " WHERE " + whereClause
+	}
+	var total int
+	row := db.QueryRowContext(ctx, q, args...)
+	if err := row.Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (p *mariadbPersistence) ListConversations(ctx context.Context, ownerID int64, filters []libquery.Filter, sorts []libquery.Sort, pagination libquery.Pagination) ([]restmodels.Conversation, int, error) {
+	fragments, args, err := libquery.Translate(filters, conversationFilters)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	// owner_id is mandatory and always applied first - it is never derived
+	// from filters, so a caller can never widen it past their own id.
+	fragments = append([]string{"owner_id = ?"}, fragments...)
+	args = append([]any{ownerID}, args...)
+	whereClause := strings.Join(fragments, " AND ")
+
+	total, err := countConversations(ctx, p.db, whereClause, args)
+	if err != nil {
+		return nil, 0, err
+	}
+	orderBy, err := libquery.BuildOrderBy(sorts, conversationSortFields, "updated DESC")
+	if err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT id, status, initiative, name, lock_id, created, updated FROM conversations WHERE ` + whereClause + ` ORDER BY ` + orderBy
+	limitClause, limitArgs := paginationClause(pagination)
+	query += limitClause
+	rows, err := p.db.QueryContext(ctx, query, append(append([]any{}, args...), limitArgs...)...)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -50,11 +118,11 @@ func (p *mariadbPersistence) ListConversations(ctx context.Context, ownerID int6
 	for rows.Next() {
 		c, err := scanConversation(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		conversations = append(conversations, c)
 	}
-	return conversations, rows.Err()
+	return conversations, total, rows.Err()
 }
 
 func (p *mariadbPersistence) GetConversation(ctx context.Context, ownerID int64, conversationID int64) (restmodels.Conversation, error) {

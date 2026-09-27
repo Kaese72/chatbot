@@ -13,6 +13,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/persistence"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
+	"github.com/Kaese72/huemie-lib/query"
 	"github.com/danielgtaylor/huma/v2"
 )
 
@@ -63,20 +64,37 @@ func mapServiceError(err error) error {
 	}
 }
 
-func (app *WebApp) ListConversations(ctx context.Context, input *struct{}) (*struct {
+func (app *WebApp) ListConversations(ctx context.Context, input *struct {
+	Filters string `query:"filters" doc:"a string JSON array of objects containing field, operator, and value for filtering"`
+	Sort    string `query:"sort" doc:"a string JSON array of objects containing field and direction ('asc' or 'desc') for sorting"`
+	query.Pagination
+}) (*struct {
+	query.TotalCount
 	Body restmodels.ConversationList
 }, error) {
 	ownerID, err := callerID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	conversations, err := app.conversations.ListConversations(ctx, ownerID)
+	filters, err := query.ParseFilters(input.Filters)
+	if err != nil {
+		return nil, err
+	}
+	sorts, err := query.ParseSort(input.Sort)
+	if err != nil {
+		return nil, err
+	}
+	conversations, total, err := app.conversations.ListConversations(ctx, ownerID, filters, sorts, query.Pagination{Offset: input.Offset, Limit: input.Limit})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &struct {
+		query.TotalCount
 		Body restmodels.ConversationList
-	}{Body: restmodels.ConversationList{Conversations: conversations}}, nil
+	}{
+		TotalCount: query.TotalCount{TotalCount: total},
+		Body:       restmodels.ConversationList{Conversations: conversations},
+	}, nil
 }
 
 func (app *WebApp) NewConversation(ctx context.Context, input *struct {

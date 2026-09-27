@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/Kaese72/authentication v0.0.4
-	github.com/Kaese72/huemie-lib v0.0.6
+	github.com/Kaese72/huemie-lib v0.0.7
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/danielgtaylor/huma/v2 v2.34.1
 	github.com/go-sql-driver/mysql v1.9.3

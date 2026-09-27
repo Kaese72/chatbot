@@ -15,6 +15,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/events"
 	"github.com/Kaese72/chatbot/internal/persistence"
 	"github.com/Kaese72/chatbot/restmodels"
+	"github.com/Kaese72/huemie-lib/query"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humamux"
 	"github.com/danielgtaylor/huma/v2/sse"
@@ -34,12 +35,12 @@ const (
 	ownerB = int64(200)
 )
 
-func (f *fakeDB) ListConversations(_ context.Context, ownerID int64) ([]restmodels.Conversation, error) {
+func (f *fakeDB) ListConversations(_ context.Context, ownerID int64, _ []query.Filter, _ []query.Sort, _ query.Pagination) ([]restmodels.Conversation, int, error) {
 	f.listedFor = append(f.listedFor, ownerID)
 	if ownerID != ownerA {
-		return []restmodels.Conversation{}, nil
+		return []restmodels.Conversation{}, 0, nil
 	}
-	return []restmodels.Conversation{{ID: 1, Name: "secret"}}, nil
+	return []restmodels.Conversation{{ID: 1, Name: "secret"}}, 1, nil
 }
 
 func (f *fakeDB) GetConversation(_ context.Context, ownerID int64, id int64) (restmodels.Conversation, error) {

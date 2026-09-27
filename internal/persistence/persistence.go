@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/Kaese72/chatbot/restmodels"
+	"github.com/Kaese72/huemie-lib/query"
 )
 
 // Sentinel errors returned by Persistence implementations. Callers
@@ -61,9 +62,13 @@ type Persistence interface {
 	// somebody else is indistinguishable from one that doesn't exist, and is
 	// reported as ErrConversationNotFound.
 
-	// ListConversations returns every conversation owned by ownerID, most
-	// recently updated first.
-	ListConversations(ctx context.Context, ownerID int64) ([]restmodels.Conversation, error)
+	// ListConversations returns the page of conversations owned by ownerID
+	// matching filters, ordered by sorts (or most recently updated first if
+	// sorts is empty), along with the total number matching filters
+	// (ignoring pagination). owner_id is never a filterable field - see the
+	// privacy invariant above - it is always applied as an implicit,
+	// non-user-controlled clause by the implementation.
+	ListConversations(ctx context.Context, ownerID int64, filters []query.Filter, sorts []query.Sort, pagination query.Pagination) ([]restmodels.Conversation, int, error)
 
 	// GetConversation returns a single conversation by ID, or
 	// ErrConversationNotFound if it doesn't exist or isn't owned by ownerID.

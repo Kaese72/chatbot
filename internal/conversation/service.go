@@ -13,6 +13,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/persistence"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
+	"github.com/Kaese72/huemie-lib/query"
 	"github.com/google/uuid"
 )
 
@@ -63,8 +64,8 @@ func NewService(
 // and a conversation owned by somebody else is reported exactly like one that
 // doesn't exist (persistence.ErrConversationNotFound).
 
-func (s *Service) ListConversations(ctx context.Context, ownerID int64) ([]restmodels.Conversation, error) {
-	return s.db.ListConversations(ctx, ownerID)
+func (s *Service) ListConversations(ctx context.Context, ownerID int64, filters []query.Filter, sorts []query.Sort, pagination query.Pagination) ([]restmodels.Conversation, int, error) {
+	return s.db.ListConversations(ctx, ownerID, filters, sorts, pagination)
 }
 
 func (s *Service) GetConversation(ctx context.Context, ownerID int64, conversationID int64) (restmodels.Conversation, error) {
