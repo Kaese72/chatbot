@@ -6,12 +6,14 @@
 // the README's requirement that "the bot is authenticated as its own user,
 // to the system, and makes actions via that user."
 //
-// The types below intentionally mirror only the subset of device-store's
-// restmodels package the chatbot needs, defined locally rather than
-// imported from the device-store module — the same convention
-// ittt-orchestrator's internal/devicestore client already follows in this
-// monorepo, which avoids pulling device-store's full dependency tree into
-// an unrelated service for the sake of a handful of struct shapes.
+// Response types are device-store's own restmodels, imported directly
+// rather than mirrored locally -- restmodels has no dependencies beyond the
+// standard library (see github.com/Kaese72/device-store/restmodels), so
+// depending on it doesn't pull device-store's heavier transitive deps (its
+// DB driver, APM modules, etc.) into this binary; go only compiles and
+// links packages actually imported. This also means a field device-store
+// adds or renames can't silently drift out of what the chatbot sees, unlike
+// a hand-maintained mirror struct would.
 package devicestore
 
 import (
@@ -23,87 +25,13 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/Kaese72/device-store/restmodels"
 )
 
 // pageLimit is the maximum page size device-store's public API accepts for
 // list endpoints (see device-store's GetDevices/GetGroups query binding).
 const pageLimit = 200
-
-// BooleanArgumentSpec, NumericArgumentSpec, TextArgumentSpec, and
-// ArgumentSpec mirror device-store's restmodels/capabilityschema.go. They
-// describe the shape of arguments a capability accepts, which the chatbot
-// translates into the trigger_device_capability / trigger_group_capability
-// tool's JSON schema for the LLM.
-type BooleanArgumentSpec struct {
-	Default *bool `json:"default,omitempty"`
-}
-
-type NumericArgumentSpec struct {
-	Min     float32  `json:"min"`
-	Max     float32  `json:"max"`
-	Default *float32 `json:"default,omitempty"`
-}
-
-type TextArgumentSpec struct {
-	Default *string `json:"default,omitempty"`
-	Min     *int    `json:"min,omitempty"`
-	Max     *int    `json:"max,omitempty"`
-}
-
-type ArgumentSpec struct {
-	Name    string               `json:"name"`
-	Boolean *BooleanArgumentSpec `json:"boolean,omitempty"`
-	Numeric *NumericArgumentSpec `json:"numeric,omitempty"`
-	Text    *TextArgumentSpec    `json:"text,omitempty"`
-}
-
-type Attribute struct {
-	Name    string   `json:"name"`
-	Boolean *bool    `json:"boolean-state,omitempty"`
-	Numeric *float32 `json:"numeric-state,omitempty"`
-	Text    *string  `json:"string-state,omitempty"`
-}
-
-type DeviceCapability struct {
-	Name          string         `json:"name"`
-	ArgumentSpecs []ArgumentSpec `json:"argument-specs"`
-	Updated       time.Time      `json:"updated"`
-}
-
-type GroupCapability struct {
-	Name          string         `json:"name"`
-	ArgumentSpecs []ArgumentSpec `json:"argument-specs"`
-	Updated       time.Time      `json:"updated"`
-}
-
-type Device struct {
-	ID               int                `json:"id"`
-	BridgeIdentifier string             `json:"bridge-identifier"`
-	AdapterId        int                `json:"adapter-id"`
-	Updated          time.Time          `json:"updated"`
-	Attributes       []Attribute        `json:"attributes"`
-	Capabilities     []DeviceCapability `json:"capabilities"`
-	GroupIds         []int              `json:"group-ids"`
-}
-
-type Group struct {
-	ID               int               `json:"id"`
-	Name             string            `json:"name"`
-	AdapterId        int               `json:"adapter-id"`
-	BridgeIdentifier string            `json:"bridge-identifier"`
-	Updated          time.Time         `json:"updated"`
-	Capabilities     []GroupCapability `json:"capabilities"`
-	DeviceIds        []int             `json:"device-ids"`
-}
-
-// GroupSearchResult mirrors device-store's restmodels.GroupSearchResult, a
-// single match from its fuzzy group-name search endpoint. Relevance is a
-// similarity score in [0,1] (1 being an exact match), formatted as a string.
-type GroupSearchResult struct {
-	ID        int    `json:"id"`
-	Name      string `json:"name"`
-	Relevance string `json:"relevance"`
-}
 
 // CapabilityArgs is the free-form argument object passed through to a
 // device or group capability trigger.
@@ -131,11 +59,11 @@ func NewClient(baseURL string, tokenProvider func(context.Context) (string, erro
 // ListDevices returns every device known to device-store, paging through
 // the public API's list endpoint (capped at 200 per page) rather than
 // silently truncating to the first page.
-func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
-	all := []Device{}
+func (c *Client) ListDevices(ctx context.Context) ([]restmodels.Device, error) {
+	all := []restmodels.Device{}
 	offset := 0
 	for {
-		var page []Device
+		var page []restmodels.Device
 		if err := c.getJSON(ctx, fmt.Sprintf("/device-store/v0/devices?offset=%d&limit=%d", offset, pageLimit), &page); err != nil {
 			return nil, err
 		}
@@ -149,11 +77,11 @@ func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
 
 // ListGroups returns every group known to device-store, paging through the
 // public API's list endpoint (capped at 200 per page).
-func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
-	all := []Group{}
+func (c *Client) ListGroups(ctx context.Context) ([]restmodels.Group, error) {
+	all := []restmodels.Group{}
 	offset := 0
 	for {
-		var page []Group
+		var page []restmodels.Group
 		if err := c.getJSON(ctx, fmt.Sprintf("/device-store/v0/groups?offset=%d&limit=%d", offset, pageLimit), &page); err != nil {
 			return nil, err
 		}
@@ -167,9 +95,9 @@ func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
 
 // SearchGroups fuzzy-searches device-store for groups by name, returning up
 // to limit results ordered from best to worst match.
-func (c *Client) SearchGroups(ctx context.Context, query string, limit int) ([]GroupSearchResult, error) {
+func (c *Client) SearchGroups(ctx context.Context, query string, limit int) ([]restmodels.GroupSearchResult, error) {
 	path := fmt.Sprintf("/device-store/v0/groups/search?q=%s&limit=%d", url.QueryEscape(query), limit)
-	results := []GroupSearchResult{}
+	results := []restmodels.GroupSearchResult{}
 	if err := c.getJSON(ctx, path, &results); err != nil {
 		return nil, err
 	}
