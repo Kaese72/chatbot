@@ -7,7 +7,9 @@ via the **API key** API and the chatbot is available in the UI to have conversat
 Some basic requirements
 
 * The bot should be locked down to only have access to services within the cluster (no external access for not)
-* The bot is authenticated as its own *user*, to the system, and makes actions via that user. 
+* The bot acts as the actual human user driving the current conversation, not as itself: it
+  impersonates that user for every action against another service, so that service's own
+  permission checks and audit trail see the real actor.
 * The bot is built as a (optionally multi replica) golang service which takes conversation requests from the user and forwards them to an LLM together with the available tools
 * The bot takes care of a conversation behind the scenes
 
@@ -148,46 +150,39 @@ presentable error message rather than proceeding.
 
 ### Identity
 
-Per "the bot is authenticated as its own user, to the system, and makes actions via that user",
-the bot needs a real, ordinary user in the authentication service to act as -- but nothing in
-this repository, or the authentication service, should have to hardcode or bootstrap one. Instead
-the chatbot provisions its own identity, on demand, the first time someone with a valid session
-sets it up:
+The chatbot has no authentication-service user account of its own, and makes no tool call as
+itself. Instead it impersonates the human user who is driving the conversation turn currently
+being processed, so the service it calls (currently device-store) enforces that user's own
+permissions and records that user, not the bot, as the actor.
 
-* `POST /chatbot-service/v0/identities/setup` -- body `{"name": "..."}`. Using the caller's own
-  bearer token (already validated by this service's own inbound auth middleware) to authorize the
-  call, the chatbot asks the authentication service to create a brand-new user named `name`, with
-  a random username and password the caller never sees, then saves that username/password in its
-  own database. This never blocks conversations from being created or used -- it only determines
-  whether tool calls that act on another service (currently device-store) succeed.
-* `GET /chatbot-service/v0/identities/status` -- body `{"configured": true|false}`, so a UI can
-  decide whether to show onboarding for this step. It reports only whether an identity is saved
-  locally, not whether the authentication-service user behind it still exists.
+This is done via a short-lived, server-to-server token exchange with the authentication
+service's *internal* listener (a separate port from its public API, reachable only from the
+chatbot's own pod):
 
-Before every tool call, the chatbot logs in as its saved identity to get a fresh use-token,
-rather than holding one long-lived credential from setup time. If no identity has been saved yet,
-or the authentication service rejects the login (most likely because the user behind it was
-deleted directly in the authentication service, out from under the chatbot), every tool call
-fails with a result explaining that identity setup is needed -- the conversation itself continues
-normally; the model just can't act on anything until setup is (re-)run.
+1. The chatbot authenticates to that listener as itself, using this pod's own Kubernetes
+   ServiceAccount token (a projected, audience-bound token, re-read fresh from disk for every
+   call since kubelet rotates it in place) -- not an authentication-service `use` token. The
+   authentication service verifies it via the Kubernetes `TokenReview` API
+   (`huemie-lib/k8sauth`), checking that it names an allow-listed ServiceAccount in its own
+   namespace.
+2. Having proven it is the chatbot, it calls `POST /authentication-service/v0/internal/impersonate/{id}`
+   for the ID of the user who started the current conversation turn, and receives back an
+   ordinary, short-lived `use` token for that user -- carrying that user's own real permissions,
+   never the chatbot's.
+3. That impersonated token, not any chatbot credential, is what's presented to device-store.
 
-**Why this exists, and why it's a stopgap:** the alternative was a deploy-time JWT/credential
-configured once and never rotated, checked into the same secret store as every other deploy-time
-value. Provisioning it dynamically avoids ever hand-minting a credential for the bot, and gives it
-a real, deletable, auditable identity like any other user of the system. The corresponding cost:
-there is no lifecycle management. Re-running setup abandons the previous authentication-service
-user rather than deleting it, and nothing here notices or reacts if that user is deleted
-externally until the next tool call fails to log in.
-**TODO:** replace this with whatever this system's real service-identity story ends up being
-(a dedicated service-account concept in the authentication service, short-lived tokens issued
-per-request, etc.) once one exists -- this mechanism was designed to require zero changes to the
-authentication service, which was the point, but is not meant to be the permanent answer.
+This mechanism requires no human-facing permission or grant: nothing about "who may impersonate"
+is configurable by an ordinary user or admin. It is implemented by `internal/serviceauth`
+(chatbot-side) and the authentication service's internal listener + `huemie-lib/k8sauth`
+(server-side). This replaces an earlier design where the chatbot provisioned itself an ordinary
+authentication-service user and acted as that user for every tool call, regardless of who was
+actually driving the conversation.
 
 ### Status
 
-`GET /chatbot-service/v0/status` combines the API Key and Identity checks above into one call --
-body `{"identity": true|false, "api-key": true|false}` -- so a UI deciding whether it can offer to
-start a new conversation only has to make one request rather than checking both individually.
+`GET /chatbot-service/v0/status` reports whether an active Anthropic API key is configured --
+body `{"api-key": true|false}` -- so a UI deciding whether it can offer to start a new
+conversation has a single call to make.
 
 ## Architecture
 
@@ -307,13 +302,13 @@ internally.
 
 The service itself needs to have the following configured at deploy time:
 
-* The authentication service's own REST API URL, used to create and log in as the bot's own
-  identity (see the **Identity** section above).
+* The authentication service's internal listener URL, used to exchange this pod's own Kubernetes
+  ServiceAccount token for an impersonation token (see the **Identity** section above), and the
+  path to that ServiceAccount token itself (a projected volume mount).
 * The authentication service's RSA public key, used to verify the `use` token on every inbound
   request to this service's own REST API (same scheme as `device-store`: no endpoint is reachable
   without a valid bearer token except the OpenAPI/docs routes).
 
-Neither the Anthropic API key nor the device-store credential is deploy-time config: the Anthropic
-key is stored in the database and managed at runtime via the **API key** API described above, and
-the device-store credential is a self-provisioned identity set up via the **Identity** API, also
-described above.
+The Anthropic API key is not deploy-time config: it is stored in the database and managed at
+runtime via the **API key** API described above. There is no device-store credential to
+configure at all -- see the **Identity** section above.

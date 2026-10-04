@@ -62,16 +62,33 @@ func (c DeviceStoreConfig) Validate() error {
 }
 
 // AuthenticationConfig holds the parameters needed to call the
-// authentication service's own REST API (creating the chatbot's identity,
-// logging in as it) -- as opposed to AuthConfig above, which is only the
-// public key used to verify tokens on chatbot's own inbound requests.
+// authentication service's internal listener (exchanging this pod's own
+// Kubernetes ServiceAccount token for a short-lived impersonation token --
+// see internal/serviceauth) -- as opposed to AuthConfig above, which is only
+// the public key used to verify tokens on chatbot's own inbound requests.
 type AuthenticationConfig struct {
-	URL string `mapstructure:"url"`
+	// InternalURL is authentication's internal listener base URL, reachable
+	// only from this pod per the NetworkPolicy -- never its public API.
+	InternalURL string `mapstructure:"internal-url"`
 }
 
 func (c AuthenticationConfig) Validate() error {
-	if c.URL == "" {
-		return errors.New("must supply authentication service URL")
+	if c.InternalURL == "" {
+		return errors.New("must supply authentication service internal URL")
+	}
+	return nil
+}
+
+// ServiceTokenConfig holds the path to this pod's own projected, audience-
+// bound Kubernetes ServiceAccount token, used by internal/serviceauth to
+// authenticate to authentication's internal listener.
+type ServiceTokenConfig struct {
+	Path string `mapstructure:"path"`
+}
+
+func (c ServiceTokenConfig) Validate() error {
+	if c.Path == "" {
+		return errors.New("must supply service token path")
 	}
 	return nil
 }
@@ -138,6 +155,7 @@ type Config struct {
 	Anthropic      AnthropicConfig      `mapstructure:"anthropic"`
 	Auth           AuthConfig           `mapstructure:"auth"`
 	Authentication AuthenticationConfig `mapstructure:"authentication"`
+	ServiceToken   ServiceTokenConfig   `mapstructure:"service-token"`
 	Lock           LockConfig           `mapstructure:"lock"`
 }
 
@@ -158,6 +176,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Authentication.Validate(); err != nil {
+		return err
+	}
+	if err := c.ServiceToken.Validate(); err != nil {
 		return err
 	}
 	if err := c.Lock.Validate(); err != nil {
@@ -195,10 +216,14 @@ func init() {
 	// Auth (authentication service RS256 public key, for verifying `use` tokens)
 	viper.BindEnv("auth.rsa-public-key-path")
 
-	// Authentication service's own API (creating/logging in as the
-	// chatbot's identity -- see internal/identity)
-	viper.BindEnv("authentication.url")
-	viper.SetDefault("authentication.url", "http://authentication:8080")
+	// Authentication service's internal listener (impersonation -- see
+	// internal/serviceauth)
+	viper.BindEnv("authentication.internal-url")
+	viper.SetDefault("authentication.internal-url", "http://authentication:8081")
+
+	// This pod's own projected Kubernetes ServiceAccount token
+	viper.BindEnv("service-token.path")
+	viper.SetDefault("service-token.path", "/var/run/secrets/tokens/authentication-internal")
 
 	// Conversation locking
 	viper.BindEnv("lock.timeout-seconds")

@@ -75,7 +75,7 @@ func newTestServer(t *testing.T) (*httptest.Server, func(userID int64) string, *
 		t.Fatal(err)
 	}
 	sign := func(userID int64) string {
-		s, err := usertoken.Sign(key, userID, time.Minute)
+		s, err := usertoken.Sign(key, userID, time.Minute, usertoken.Permissions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +84,7 @@ func newTestServer(t *testing.T) (*httptest.Server, func(userID int64) string, *
 
 	db := &fakeDB{}
 	svc := conversation.NewService(db, nil, nil, nil, events.NewRegistry(), events.NewRegistry(), 1)
-	app := NewWebApp(svc, nil)
+	app := NewWebApp(svc)
 
 	router := mux.NewRouter()
 	router.Use(usertoken.Middleware(&key.PublicKey, "/chatbot-service/openapi"))

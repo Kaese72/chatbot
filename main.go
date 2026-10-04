@@ -11,10 +11,10 @@ import (
 	"github.com/Kaese72/chatbot/internal/conversation"
 	"github.com/Kaese72/chatbot/internal/devicestore"
 	"github.com/Kaese72/chatbot/internal/events"
-	"github.com/Kaese72/chatbot/internal/identity"
 	"github.com/Kaese72/chatbot/internal/llm"
 	"github.com/Kaese72/chatbot/internal/persistence/mariadb"
 	"github.com/Kaese72/chatbot/internal/restwebapp"
+	"github.com/Kaese72/chatbot/internal/serviceauth"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
 	"github.com/danielgtaylor/huma/v2"
@@ -35,10 +35,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	authClient := authclient.NewClient(config.Loaded.Authentication.URL)
-	identityService := identity.NewService(db, authClient)
+	authClient := authclient.NewClient(config.Loaded.Authentication.InternalURL)
+	serviceAuth := serviceauth.NewProvider(config.Loaded.ServiceToken.Path, authClient)
 
-	deviceStoreClient := devicestore.NewClient(config.Loaded.DeviceStore.URL, identityService.DeviceStoreToken)
+	deviceStoreClient := devicestore.NewClient(config.Loaded.DeviceStore.URL, serviceAuth.Token)
 	dispatcher := llm.NewDispatcher(deviceStoreClient)
 	llmClient := llm.NewClient(config.Loaded.Anthropic.Model)
 
@@ -63,7 +63,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	webapp := restwebapp.NewWebApp(convService, identityService)
+	webapp := restwebapp.NewWebApp(convService)
 
 	pubKey, err := usertoken.LoadPublicKeyFromFile(config.Loaded.Auth.RSAPublicKeyPath)
 	if err != nil {
@@ -91,8 +91,6 @@ func main() {
 	huma.Patch(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.UpdateAPIKey)
 	huma.Delete(api, "/chatbot-service/v0/api-keys/{apiKeyID:[0-9]+}", webapp.DeleteAPIKey)
 
-	huma.Post(api, "/chatbot-service/v0/identities/setup", webapp.SetupIdentity)
-	huma.Get(api, "/chatbot-service/v0/identities/status", webapp.IdentityStatus)
 	huma.Get(api, "/chatbot-service/v0/status", webapp.GetStatus)
 
 	sse.Register(api, huma.Operation{

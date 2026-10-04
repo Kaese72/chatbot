@@ -13,13 +13,14 @@ User / UI
     v
 [ chatbot-service ] <----RabbitMQ (conversationEvents, fanout)----> [ chatbot-service replica N ]
     |        |
-    |        +--> MariaDB (conversations, dialog_entries, identity -- the lock + audit trail + the bot's own saved credential)
+    |        +--> MariaDB (conversations, dialog_entries -- the lock + audit trail)
     |
     +--> Anthropic Messages API (streaming, tool use)
     |
-    +--> authentication service (create identity at setup time; log in as it fresh before every tool call)
+    +--> authentication service's internal listener (own Kubernetes ServiceAccount token in,
+    |    impersonation use-token for the conversation's owner out -- see internal/serviceauth)
     |
-    +--> device-store public API (Bearer use-token, as the bot's own self-provisioned user)
+    +--> device-store public API (Bearer use-token, as the conversation's owner, via impersonation)
 ```
 
 Every replica subscribes to the same `conversationEvents` fanout exchange. A "terminate" event only does something on the replica that happens to be running that conversation's `process()` goroutine; an "updated" event wakes any `.../follow/{id}` SSE connections open on any replica for that conversation, which then re-read DialogEntries from MariaDB (the database, not the event, is always the source of truth -- see `internal/events.Registry`).
@@ -29,11 +30,11 @@ Every replica subscribes to the same `conversationEvents` fanout exchange. A "te
 ```
 main.go                        # wiring: config, persistence, LLM client, device-store client, events, HTTP server
 internal/config/                # viper-based config
-internal/persistence/           # storage interface (locking + DialogEntry read/write contract + identity credential)
+internal/persistence/           # storage interface (locking + DialogEntry read/write contract)
 internal/persistence/mariadb/   # MariaDB implementation
 internal/events/                # RabbitMQ pub/sub + in-process fan-out registries (termination, SSE updates)
-internal/authclient/            # authentication service client (create user, login) -- used only by internal/identity
-internal/identity/              # the chatbot's self-provisioned identity: setup, status, fresh-token-per-call
+internal/authclient/            # authentication service's internal-listener client (impersonate) -- used only by internal/serviceauth
+internal/serviceauth/           # this pod's own Kubernetes ServiceAccount token in, impersonation use-token for the conversation's owner out
 internal/devicestore/           # device-store public API client (list/trigger devices & groups)
 internal/llm/                   # Anthropic Messages API client, tool schema, tool dispatch
 internal/conversation/          # the README's "Architecture" section, literally: locking, the turn/tool loop, termination and recovery
@@ -55,9 +56,9 @@ migrations/                     # Flyway SQL migrations
 
 This keeps the tool schema fixed and cacheable regardless of how many devices exist; the model discovers devices/groups/capabilities by calling `list_devices`/`list_groups`, the same way a human would look them up, rather than the system prompt enumerating them. `internal/llm.ClassifyTool` is the single source of truth mapping a tool name to which DialogEntry pairing it gets -- `internal/conversation` never re-derives that mapping independently, so a `*_CALL` and its `*_RESPONSE` can never end up as mismatched types.
 
-**Device-store is called via its public API with the bot's own identity**, not the unauthenticated internal API. The internal API (`device-store-internal`) only exposes single-device lookups and capability triggers -- no list endpoints -- and per the README's "the bot is authenticated as its own user, to the system, and makes actions via that user", using one consistent, authenticated identity for both discovery and triggering is the more faithful implementation, and gives device-store's own audit trail a real actor for every bot-initiated trigger.
+**Device-store is called via its public API, impersonating the conversation's owner**, not the unauthenticated internal API. The internal API (`device-store-internal`) only exposes single-device lookups and capability triggers -- no list endpoints -- and using one consistent, authenticated identity (the real human user, not the bot) for both discovery and triggering is the more faithful implementation, and gives device-store's own audit trail the real actor for every trigger, not a blanket bot identity.
 
-**The identity itself is self-provisioned, not deploy-time config.** `POST /chatbot-service/v0/identities/setup` (`internal/restwebapp.WebApp.SetupIdentity`) forwards the caller's own already-validated bearer token to `internal/authclient.Client.CreateUser`, which calls the authentication service's `POST /users` with a freshly generated random username/password and the given display name; `internal/identity.Service.Setup` then saves that username/password via `persistence.Persistence.SaveIdentity` (table `identity`, migrations/V003.sql, a single row pinned to `id = 1`). `devicestore.NewClient` is constructed with `identity.Service.DeviceStoreToken` as its token provider (see `internal/devicestore.Client.tokenProvider`), so every single tool call logs in fresh via `internal/authclient.Client.Login` rather than reusing one credential fetched at startup. No identity saved (`persistence.ErrIdentityNotConfigured`), or a login that fails against the one saved, surfaces as an ordinary failed tool result (`internal/llm.Dispatcher.Dispatch`'s existing error-formatting path) -- the conversation itself is never blocked by identity setup being incomplete, only individual tool calls are. `GET /chatbot-service/v0/identities/status` reports only whether a row is saved locally, for UI onboarding; it does not verify the underlying authentication-service user still exists. Re-running setup always replaces the saved row wholesale (no "already configured" guard, unlike the authentication service's own bootstrap setup) -- this is also the only recovery path if that user was deleted directly in the authentication service. This mechanism was deliberately designed to require zero changes to the authentication service itself; see the README's **Identity** section for the full rationale and its documented TODO.
+**Impersonation is a Kubernetes-service-to-service exchange, not a grantable user permission.** `internal/serviceauth.Provider.Token` (wired as `devicestore.NewClient`'s token provider, see `internal/devicestore.Client.tokenProvider`) is called fresh before every tool call: it reads the acting user ID that `internal/conversation.Service.New`/`Input` set on the background-processing context (`serviceauth.ContextWithActingUser`, read via `serviceauth.ActingUser`), re-reads this pod's own projected Kubernetes ServiceAccount token from disk (kubelet rotates its contents in place, so it's never cached), and presents it to the authentication service's *internal* listener via `internal/authclient.Client.Impersonate`. That listener (a separate port from authentication's public API) verifies the ServiceAccount token with the Kubernetes `TokenReview` API (`huemie-lib/k8sauth.RequireServiceAccount`, checking the caller names an allow-listed ServiceAccount in its own namespace) and, if it passes, mints and returns an ordinary short-lived `use` token for the acting user, carrying that user's own real permissions. No permission flag, grant, or endpoint for this exists on the human-facing side; authorization is entirely "are you the chatbot's own Kubernetes ServiceAccount". `serviceauth.Provider.Token` fails loudly (never silently proceeds) if no acting user is set on the context, since that would otherwise silently fall back to acting as nobody.
 
 **Recovery from an interrupted turn** (termination, or a lock stolen after the 300s timeout) never rolls back to the previous user turn and never replays a truncated content block -- see the design discussion in this repo's conversation history for the full reasoning. In short: only fully-streamed content blocks are ever persisted (an in-flight, not-yet-`content_block_stop`'d block is simply dropped, no DB trace), and any tool call that got persisted (`*_CALL`) but never got its `*_RESPONSE` before the interruption is resolved with a synthetic `is_error`/`Success: false` result (`"Interrupted before completion. Please retry if needed."`) the next time the conversation is picked up, via `internal/conversation.findUnresolvedToolCalls` + `buildToolResponseEntry`. This satisfies the Messages API's hard requirement that every `tool_use` block have a matching `tool_result` before the conversation can be replayed, without ever re-executing a capability trigger that may have already taken effect.
 
@@ -75,7 +76,8 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 - `Terminate` goes through `GetConversation(ownerID, ...)` before publishing the RabbitMQ event; without that any user could stop anyone's turn.
 - The SSE follow route can't return an error from its handler (the 200 stream is already open), so ownership is checked up front by `WebApp.RequireConversationOwner`, a huma operation middleware, giving a proper 404.
 - `owner_id` is still nullable in the schema, but the pre-existing ownerless conversations were deleted by `migrations/V006.sql`, so every row has an owner. It is not exposed in `restmodels.Conversation`.
-- API keys and the bot's identity are intentionally still service-wide, not per-user.
+- API keys are intentionally still service-wide, not per-user. The chatbot has no identity of its
+  own to scope per-user in the first place -- see **Identity** in the README.
 
 ## Configuration (Environment Variables)
 
@@ -90,7 +92,8 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 | `DEVICE_STORE_URL` | `http://device-store:8080` | no |
 | `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | no |
 | `AUTH_RSA_PUBLIC_KEY_PATH` | — | yes (authentication service's RS256 public key, PEM/PKIX; same convention as `device-store`'s `AUTH_RSA_PUBLIC_KEY_PATH`) |
-| `AUTHENTICATION_URL` | `http://authentication:8080` | no (the authentication service's own REST API, used to create/log in as the bot's identity -- see `internal/identity`) |
+| `AUTHENTICATION_INTERNAL_URL` | `http://authentication:8081` | no (authentication's internal listener, used to exchange this pod's own Kubernetes ServiceAccount token for an impersonation token -- see `internal/serviceauth`) |
+| `SERVICE_TOKEN_PATH` | `/var/run/secrets/tokens/authentication-internal` | no (path to this pod's own projected, audience-bound Kubernetes ServiceAccount token) |
 | `LOCK_TIMEOUT_SECONDS` | `300` | no (the README-specified value) |
 | `LOCK_MAX_TOOL_LOOP_ITERATIONS` | `25` | no (not in the README; a bound on the step 6/7 tool-call loop so a misbehaving model can't hold a conversation's lock forever) |
 
@@ -110,12 +113,11 @@ addition to the application-level "deactivate the others first" logic in
 HTTP/503, if no key is active -- this fails fast before a conversation is created/flipped to
 `AGENT_IN_PROGRESS`, rather than leaving it stuck with no way to make progress.
 
-**The device-store credential is likewise database-backed, not an environment variable** -- see
-"The identity itself is self-provisioned" above and the README's **Identity** section. Unlike the
-Anthropic API key, there is no equivalent fail-fast check at conversation-start time: identity
-setup being incomplete only ever surfaces as an individual tool call failing, since (unlike the
-LLM key) it's entirely possible for a conversation to complete usefully without ever calling a
-tool.
+**There is no device-store credential to configure at all.** Every tool call impersonates the
+conversation's owner fresh, via the Kubernetes-service-to-service exchange described in
+**Impersonation** above and the README's **Identity** section -- there is nothing analogous to
+the Anthropic API key's "no active key configured" failure mode, since the chatbot never holds
+or manages a device-store credential of its own.
 
 ## Development
 
@@ -138,6 +140,3 @@ Managed by Flyway via `Dockerfile.migrater`, same as every other service in this
 ## Not yet implemented (explicitly out of scope for this PoC pass)
 
 * Almost no automated tests: only `internal/restwebapp/privacy_test.go`, which exercises the per-user privacy rules over HTTP against a stub `Persistence` (no database, so the `owner_id` SQL itself is not covered).
-* No lifecycle management for abandoned identities: re-running `POST /identities/setup` leaves
-  the previous authentication-service user in place, un-deleted. See the README's **Identity**
-  section TODO for the intended eventual replacement of this whole mechanism.

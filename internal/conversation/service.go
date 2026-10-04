@@ -11,6 +11,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/events"
 	"github.com/Kaese72/chatbot/internal/llm"
 	"github.com/Kaese72/chatbot/internal/persistence"
+	"github.com/Kaese72/chatbot/internal/serviceauth"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
 	"github.com/Kaese72/huemie-lib/query"
@@ -100,7 +101,7 @@ func (s *Service) New(ctx context.Context, ownerID int64, query string) (restmod
 	if err != nil {
 		return restmodels.Conversation{}, err
 	}
-	go s.process(context.Background(), conv.ID, lockID, apiKey)
+	go s.process(serviceauth.ContextWithActingUser(context.Background(), ownerID), conv.ID, lockID, apiKey)
 	s.publishUpdated(conv.ID)
 	return conv, nil
 }
@@ -119,7 +120,7 @@ func (s *Service) Input(ctx context.Context, ownerID int64, conversationID int64
 	if err := s.db.BeginInput(ctx, ownerID, conversationID, lockID, query); err != nil {
 		return restmodels.Conversation{}, err
 	}
-	go s.process(context.Background(), conversationID, lockID, apiKey)
+	go s.process(serviceauth.ContextWithActingUser(context.Background(), ownerID), conversationID, lockID, apiKey)
 	s.publishUpdated(conversationID)
 	return s.db.GetConversation(ctx, ownerID, conversationID)
 }
