@@ -12,6 +12,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/devicestore"
 	"github.com/Kaese72/chatbot/internal/events"
 	"github.com/Kaese72/chatbot/internal/llm"
+	"github.com/Kaese72/chatbot/internal/mcpserver"
 	"github.com/Kaese72/chatbot/internal/persistence/mariadb"
 	"github.com/Kaese72/chatbot/internal/restwebapp"
 	"github.com/Kaese72/chatbot/internal/serviceauth"
@@ -72,7 +73,20 @@ func main() {
 	}
 
 	router := mux.NewRouter()
-	router.Use(usertoken.Middleware(pubKey, "/chatbot-service/openapi", "/chatbot-service/docs"))
+	// Use tokens are accepted everywhere. API tokens (looked up in the
+	// authentication service, as this pod's own ServiceAccount) are accepted
+	// only on the MCP endpoint: every /chatbot-service/v0/ route either spends
+	// the service-wide Anthropic API key (conversations) or manages it
+	// (api-keys), and stays use-token only.
+	router.Use(usertoken.NewMiddleware(pubKey,
+		usertoken.SkipPrefixes("/chatbot-service/openapi", "/chatbot-service/docs"),
+		usertoken.AcceptAPITokens(usertoken.NewIntrospector(config.Loaded.Authentication.InternalURL, config.Loaded.ServiceToken.Path)),
+		usertoken.RejectAPITokensFor("/chatbot-service/v0/"),
+	))
+	// MCP (Streamable HTTP) over the same tool surface the chatbot's own LLM
+	// uses; tool calls forward the caller's own token to device-store -- see
+	// internal/mcpserver.
+	router.Handle(mcpserver.Path, mcpserver.NewHandler(config.Loaded.DeviceStore.URL, "0.1.0"))
 	humaConfig := huma.DefaultConfig("chatbot-service", "0.1.0")
 	humaConfig.OpenAPIPath = "/chatbot-service/openapi"
 	humaConfig.DocsPath = "/chatbot-service/docs"

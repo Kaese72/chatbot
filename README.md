@@ -178,6 +178,24 @@ is configurable by an ordinary user or admin. It is implemented by `internal/ser
 authentication-service user and acted as that user for every tool call, regardless of who was
 actually driving the conversation.
 
+### MCP
+
+`/chatbot-service/mcp` exposes the bot's tool surface (the same tools its own LLM gets, see
+**Service holds tools**) as a [Model Context Protocol](https://modelcontextprotocol.io) server
+over Streamable HTTP, so an external MCP client can control the system directly, without a
+conversation and without spending the service-wide Anthropic API key.
+
+* Authentication: `Authorization: Bearer <token>`, either a `use` token or an API token
+  (`humi_pat_...`). API tokens are accepted *only* here; every `/chatbot-service/v0/...` route
+  keeps refusing them (403).
+* Tool calls forward the caller's own bearer token to device-store unchanged -- no
+  impersonation. Device-store therefore enforces exactly the presented credential's
+  permissions (a narrowly scoped API token stays narrow) and audits the real caller.
+* Stateless (no `Mcp-Session-Id`) with plain JSON responses, so any replica can answer any
+  request and no sticky sessions are needed.
+* MCP tool calls are not persisted as conversations or DialogEntries; device-store's own audit
+  trail is the record.
+
 ### Status
 
 `GET /chatbot-service/v0/status` reports whether an active Anthropic API key is configured --

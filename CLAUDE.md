@@ -39,6 +39,7 @@ internal/devicestore/           # device-store public API client (list/trigger d
 internal/llm/                   # Anthropic Messages API client, tool schema, tool dispatch
 internal/conversation/          # the README's "Architecture" section, literally: locking, the turn/tool loop, termination and recovery
 internal/restwebapp/            # huma REST + SSE handlers
+internal/mcpserver/             # MCP (Streamable HTTP) server over the same tools, at /chatbot-service/mcp
 restmodels/                     # REST/JSON data models (Conversation, DialogEntry)
 eventmodels/                    # RabbitMQ event schema (ConversationEvent)
 migrations/                     # Flyway SQL migrations
@@ -78,6 +79,11 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 - `owner_id` is still nullable in the schema, but the pre-existing ownerless conversations were deleted by `migrations/V006.sql`, so every row has an owner. It is not exposed in `restmodels.Conversation`.
 - API keys are intentionally still service-wide, not per-user. The chatbot has no identity of its
   own to scope per-user in the first place -- see **Identity** in the README.
+
+**MCP endpoint (`internal/mcpserver`, mounted at `/chatbot-service/mcp`)** reuses `llm.ToolDefinitions` (converted to MCP tool schemas) and `llm.Dispatcher`, so the LLM and MCP tool surfaces can't drift. Rules to keep:
+- It is the only route accepting API tokens: main.go passes `usertoken.AcceptAPITokens` (introspecting as the chatbot's ServiceAccount, which must be in authentication's `apiTokenIntrospectionServiceAccountNames`) plus `RejectAPITokensFor("/chatbot-service/v0/")`. That's why the path is outside `/v0/`: moved under it, MCP would stop accepting API tokens. Conversely, any new route added *outside* `/v0/` accepts API tokens unless added to the reject list.
+- Tool calls use a second `devicestore.Client` whose token provider forwards the caller's own bearer (read from `req.Extra.Header`, already verified by the middleware) -- never `serviceauth`/impersonation, which would widen a scoped API token to its owner's full permissions.
+- Stateless + JSON responses (no session affinity across replicas). Nothing is persisted.
 
 ## Configuration (Environment Variables)
 
