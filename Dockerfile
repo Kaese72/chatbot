@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build
-FROM --platform=$BUILDPLATFORM docker.io/golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.26-alpine AS builder
 ARG TARGETOS TARGETARCH
 WORKDIR /workspace
 COPY . .

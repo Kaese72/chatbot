@@ -18,6 +18,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/serviceauth"
 	"github.com/Kaese72/chatbot/restmodels"
 	log "github.com/Kaese72/huemie-lib/logging"
+	"github.com/Kaese72/huemie-lib/telemetry"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humamux"
 	"github.com/danielgtaylor/huma/v2/sse"
@@ -25,6 +26,9 @@ import (
 )
 
 func main() {
+	shutdownTelemetry := telemetry.Setup(context.Background(), "chatbot")
+	defer shutdownTelemetry(context.Background())
+
 	if err := config.Loaded.Validate(); err != nil {
 		log.Error(err.Error(), map[string]interface{}{})
 		os.Exit(1)
@@ -116,7 +120,7 @@ func main() {
 	}, map[string]any{"dialog-entry": restmodels.DialogEntry{}}, webapp.FollowConversation)
 
 	log.Info("Starting chatbot-service on :8080", map[string]interface{}{})
-	if err := http.ListenAndServe(":8080", router); err != nil {
+	if err := http.ListenAndServe(":8080", telemetry.Router(router)); err != nil {
 		log.Error(err.Error(), map[string]interface{}{})
 		os.Exit(1)
 	}

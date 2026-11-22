@@ -16,6 +16,7 @@ import (
 	// aliased: ListConversations (below) builds its SQL as a local "query"
 	// variable, which would otherwise shadow the package.
 	libquery "github.com/Kaese72/huemie-lib/query"
+	"github.com/Kaese72/huemie-lib/telemetry"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -49,7 +50,7 @@ type mariadbPersistence struct {
 func NewMariadbPersistence(conf config.DatabaseConfig, lockTimeoutSeconds int) (persistence.Persistence, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true",
 		conf.User, conf.Password, conf.Host, conf.Port, conf.Database)
-	db, err := sql.Open("mysql", dsn)
+	db, err := telemetry.OpenDB("mysql", dsn)
 	if err != nil {
 		return nil, err
 	}
