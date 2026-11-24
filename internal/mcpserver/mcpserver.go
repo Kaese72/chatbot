@@ -7,7 +7,8 @@
 //
 // Authentication is the same usertoken middleware as the rest of the
 // chatbot's API, except that API tokens are accepted here (see main.go). Tool
-// calls are made against device-store with the caller's own bearer token,
+// calls are made against device-store and ittt-orchestrator with the
+// caller's own bearer token,
 // forwarded unchanged - not with an impersonation token. That way device-store
 // sees exactly the credential the caller presented and enforces exactly its
 // permissions: an API token scoped below its owner's permissions stays
@@ -21,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/Kaese72/chatbot/internal/devicestore"
+	"github.com/Kaese72/chatbot/internal/ittt"
 	"github.com/Kaese72/chatbot/internal/llm"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -63,15 +65,15 @@ func bearerFromHeader(header http.Header) string {
 // self-contained, so it works across the chatbot's replicas without sticky
 // sessions. Responses are plain JSON rather than SSE streams, since no tool
 // streams progress.
-func NewHandler(deviceStoreURL string, version string) http.Handler {
-	dispatcher := llm.NewDispatcher(devicestore.NewClient(deviceStoreURL, callerToken))
+func NewHandler(deviceStoreURL string, itttURL string, version string) http.Handler {
+	dispatcher := llm.NewDispatcher(devicestore.NewClient(deviceStoreURL, callerToken), ittt.NewClient(itttURL, callerToken))
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "humi",
 		Title:   "Humi",
 		Version: version,
 	}, &mcp.ServerOptions{
-		Instructions: "Controls the devices and device groups of a Humi home automation system. Use list_devices / list_groups (or fuzzy_find_group when a group is referred to by name) to discover IDs and the exact capability names and argument shapes, then trigger_device_capability / trigger_group_capability to act.",
+		Instructions: "Controls the devices, device groups and automation rules of a Humi home automation system. Use list_devices / list_groups (or fuzzy_find_group when a group is referred to by name) to discover IDs and the exact capability names and argument shapes, then trigger_device_capability / trigger_group_capability to act. Automation rules (if this, then that) are managed with list_rules / get_rule / create_rule / update_rule / delete_rule; call get_rule_schema for the rule format before writing one, and get_rule before update_rule, since an update replaces the whole rule.",
 	})
 
 	for _, def := range llm.ToolDefinitions() {

@@ -188,9 +188,9 @@ conversation and without spending the service-wide Anthropic API key.
 * Authentication: `Authorization: Bearer <token>`, either a `use` token or an API token
   (`humi_pat_...`). API tokens are accepted *only* here; every `/chatbot-service/v0/...` route
   keeps refusing them (403).
-* Tool calls forward the caller's own bearer token to device-store unchanged -- no
-  impersonation. Device-store therefore enforces exactly the presented credential's
-  permissions (a narrowly scoped API token stays narrow) and audits the real caller.
+* Tool calls forward the caller's own bearer token to device-store and ittt-orchestrator
+  unchanged -- no impersonation. Both therefore enforce exactly the presented credential's
+  permissions (a narrowly scoped API token stays narrow) and device-store audits the real caller.
 * Stateless (no `Mcp-Session-Id`) with plain JSON responses, so any replica can answer any
   request and no sticky sessions are needed.
 * MCP tool calls are not persisted as conversations or DialogEntries; device-store's own audit
@@ -315,6 +315,19 @@ successful (read by the thing handling the LLM interactions).
 
 The service that receives the API call also handles the tool resolution and deals with it
 internally.
+
+The tools cover two services, both called as the acting user:
+
+* **device-store** -- `list_devices`, `list_groups`, `fuzzy_find_group`,
+  `trigger_device_capability`, `trigger_group_capability`.
+* **ittt-orchestrator** (automation rules) -- `list_rules`, `get_rule`, `create_rule`,
+  `update_rule`, `delete_rule`, `evaluate_rule`, plus `get_rule_schema`, which relays
+  ittt-orchestrator's `GET /ittt-orchestrator/v0/rules/schema`: the rule JSON Schema of the
+  deployed ittt-orchestrator, including its descriptions of what each condition does and when a
+  rule fires. New condition types therefore need no chatbot change. Rules are written whole, as in
+  ittt-orchestrator's API: `update_rule` replaces the rule, so the model reads it with
+  `get_rule` first. ittt-orchestrator's own automation-rule view/modify permissions apply, so a
+  user without modify access gets a tool error, not a changed rule.
 
 ### Configuration
 

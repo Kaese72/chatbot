@@ -61,6 +61,20 @@ func (c DeviceStoreConfig) Validate() error {
 	return nil
 }
 
+// ITTTOrchestratorConfig holds the base URL of ittt-orchestrator's REST API
+// (api mode), called by the automation rule tools with the same identity as
+// device-store (see internal/ittt).
+type ITTTOrchestratorConfig struct {
+	URL string `mapstructure:"url"`
+}
+
+func (c ITTTOrchestratorConfig) Validate() error {
+	if c.URL == "" {
+		return errors.New("must supply ittt-orchestrator URL")
+	}
+	return nil
+}
+
 // AuthenticationConfig holds the parameters needed to call the
 // authentication service's internal listener (exchanging this pod's own
 // Kubernetes ServiceAccount token for a short-lived impersonation token --
@@ -149,14 +163,15 @@ func (c LockConfig) Validate() error {
 }
 
 type Config struct {
-	Database       DatabaseConfig       `mapstructure:"database"`
-	Event          EventConfig          `mapstructure:"event"`
-	DeviceStore    DeviceStoreConfig    `mapstructure:"device-store"`
-	Anthropic      AnthropicConfig      `mapstructure:"anthropic"`
-	Auth           AuthConfig           `mapstructure:"auth"`
-	Authentication AuthenticationConfig `mapstructure:"authentication"`
-	ServiceToken   ServiceTokenConfig   `mapstructure:"service-token"`
-	Lock           LockConfig           `mapstructure:"lock"`
+	Database       DatabaseConfig         `mapstructure:"database"`
+	Event          EventConfig            `mapstructure:"event"`
+	DeviceStore    DeviceStoreConfig      `mapstructure:"device-store"`
+	ITTT           ITTTOrchestratorConfig `mapstructure:"ittt-orchestrator"`
+	Anthropic      AnthropicConfig        `mapstructure:"anthropic"`
+	Auth           AuthConfig             `mapstructure:"auth"`
+	Authentication AuthenticationConfig   `mapstructure:"authentication"`
+	ServiceToken   ServiceTokenConfig     `mapstructure:"service-token"`
+	Lock           LockConfig             `mapstructure:"lock"`
 }
 
 func (c Config) Validate() error {
@@ -167,6 +182,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.DeviceStore.Validate(); err != nil {
+		return err
+	}
+	if err := c.ITTT.Validate(); err != nil {
 		return err
 	}
 	if err := c.Anthropic.Validate(); err != nil {
@@ -208,6 +226,10 @@ func init() {
 	// Device store
 	viper.BindEnv("device-store.url")
 	viper.SetDefault("device-store.url", "http://device-store:8080")
+
+	// ittt-orchestrator (automation rules)
+	viper.BindEnv("ittt-orchestrator.url")
+	viper.SetDefault("ittt-orchestrator.url", "http://ittt-orchestrator:8080")
 
 	// Anthropic
 	viper.BindEnv("anthropic.model")

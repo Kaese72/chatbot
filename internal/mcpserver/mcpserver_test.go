@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Kaese72/authentication/usertoken"
+	"github.com/Kaese72/chatbot/internal/llm"
 	"github.com/gorilla/mux"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -38,7 +39,9 @@ func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // fakeDeviceStore records the Authorization header of every request and
-// answers the list/trigger endpoints the dispatcher uses.
+// stands in for both device-store and ittt-orchestrator (NewHandler is given
+// its URL for both); it
+// answers the device list/trigger and rule endpoints the dispatcher uses.
 type fakeDeviceStore struct {
 	mu      sync.Mutex
 	bearers []string
@@ -53,6 +56,19 @@ func (f *fakeDeviceStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/device-store/v0/devices":
 		io.WriteString(w, `[{"id":1}]`)
+	case r.Method == http.MethodGet && r.URL.Path == "/ittt-orchestrator/v0/rules":
+		io.WriteString(w, `[{"id":4,"name":"evening","enabled":true}]`)
+	case r.Method == http.MethodGet && r.URL.Path == "/ittt-orchestrator/v0/rules/schema":
+		io.WriteString(w, `{"$ref":"#/$defs/Rule","$defs":{"TimeRangeDaysCondition":{"description":"Like time-range, but only on the given days."}}}`)
+	case r.Method == http.MethodPost && r.URL.Path == "/ittt-orchestrator/v0/rules":
+		// Like ittt-orchestrator's validation of a rule that isn't an object.
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		io.WriteString(w, `{"status":422,"detail":"validation failed","errors":[{"message":"expected object","location":"body"}]}`)
+	case r.Method == http.MethodPut && r.URL.Path == "/ittt-orchestrator/v0/rules/4":
+		body, _ := io.ReadAll(r.Body)
+		w.Write(body)
+	case r.Method == http.MethodDelete && r.URL.Path == "/ittt-orchestrator/v0/rules/4":
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/device-store/v0/devices/1/capabilities/"):
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -81,7 +97,7 @@ func setup(t *testing.T) (*httptest.Server, *fakeDeviceStore, *rsa.PrivateKey, s
 		usertoken.AcceptAPITokens(stubIntrospector{token: apiToken}),
 		usertoken.RejectAPITokensFor("/chatbot-service/v0/"),
 	))
-	router.Handle(Path, NewHandler(dsServer.URL, "test"))
+	router.Handle(Path, NewHandler(dsServer.URL, dsServer.URL, "test"))
 	router.HandleFunc("/chatbot-service/v0/conversations", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -121,8 +137,8 @@ func TestToolsForwardCallerToken(t *testing.T) {
 			if err != nil {
 				t.Fatalf("list tools: %v", err)
 			}
-			if len(tools.Tools) != 5 {
-				t.Fatalf("want 5 tools, got %d", len(tools.Tools))
+			if want := len(llm.ToolDefinitions()); len(tools.Tools) != want {
+				t.Fatalf("want %d tools, got %d", want, len(tools.Tools))
 			}
 
 			res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_devices", Arguments: map[string]any{}})
@@ -144,8 +160,49 @@ func TestToolsForwardCallerToken(t *testing.T) {
 				t.Fatalf("want tool error for unknown device: err=%v result=%+v", err, res)
 			}
 
+			// Rule tools reach ittt-orchestrator with the same token.
+			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "list_rules", Arguments: map[string]any{}})
+			if err != nil || res.IsError {
+				t.Fatalf("list_rules: err=%v result=%+v", err, res)
+			}
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, `"name":"evening"`) {
+				t.Fatalf("unexpected list_rules output: %s", text)
+			}
+			rule := map[string]any{"name": "evening", "enabled": false}
+			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "update_rule", Arguments: map[string]any{"rule_id": 4, "rule": rule}})
+			if err != nil || res.IsError {
+				t.Fatalf("update_rule: err=%v result=%+v", err, res)
+			}
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, `"enabled":false`) {
+				t.Fatalf("update_rule did not pass the rule through: %s", text)
+			}
+			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "delete_rule", Arguments: map[string]any{"rule_id": 4}})
+			if err != nil || res.IsError {
+				t.Fatalf("delete_rule: err=%v result=%+v", err, res)
+			}
+			// Rules are validated by ittt-orchestrator, not here: its
+			// rejection comes back as a tool error carrying its explanation.
+			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "create_rule", Arguments: map[string]any{"rule": "turn on the lights"}})
+			if err != nil || !res.IsError {
+				t.Fatalf("want tool error for rejected rule: err=%v result=%+v", err, res)
+			}
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, "422") || !strings.Contains(text, "expected object") {
+				t.Fatalf("ittt-orchestrator's validation error not relayed: %s", text)
+			}
+			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "get_rule_schema", Arguments: map[string]any{}})
+			if err != nil || res.IsError {
+				t.Fatalf("get_rule_schema: err=%v result=%+v", err, res)
+			}
+			// Relayed exactly as ittt-orchestrator serves it.
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.HasPrefix(text, `{"$ref":"#/$defs/Rule"`) || !strings.Contains(text, "only on the given days") {
+				t.Fatalf("rule schema not relayed from ittt-orchestrator: %.200s", text)
+			}
+
 			ds.mu.Lock()
 			defer ds.mu.Unlock()
+			if len(ds.paths) != 8 {
+				t.Fatalf("want 8 backend requests (3 device-store, 5 ittt-orchestrator), got %v", ds.paths)
+			}
 			for i, b := range ds.bearers {
 				if b != "Bearer "+token {
 					t.Fatalf("device-store request %q got %q, want the caller's own token", ds.paths[i], b)

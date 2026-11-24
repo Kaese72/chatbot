@@ -11,14 +11,24 @@ import (
 // tool_use content block (and its eventual result) should be persisted:
 // ToolTriggerDeviceCapability/ToolTriggerGroupCapability get the strictly
 // structured DialogEntry treatment described in the README; everything
-// else — currently ToolListDevices and ToolListGroups — falls back to the
-// generic, free-text-blob treatment.
+// else — currently the list/search tools and the automation rule tools —
+// falls back to the generic, free-text-blob treatment.
 const (
 	ToolListDevices             = "list_devices"
 	ToolListGroups              = "list_groups"
 	ToolTriggerDeviceCapability = "trigger_device_capability"
 	ToolTriggerGroupCapability  = "trigger_group_capability"
 	ToolFuzzyFindGroup          = "fuzzy_find_group"
+
+	// Automation (ittt-orchestrator) rule tools. All generic for
+	// DialogEntry persistence purposes.
+	ToolListRules     = "list_rules"
+	ToolGetRule       = "get_rule"
+	ToolGetRuleSchema = "get_rule_schema"
+	ToolCreateRule    = "create_rule"
+	ToolUpdateRule    = "update_rule"
+	ToolDeleteRule    = "delete_rule"
+	ToolEvaluateRule  = "evaluate_rule"
 )
 
 // ToolKind classifies a tool call for DialogEntry persistence purposes.
@@ -72,6 +82,30 @@ type FuzzyFindGroupInput struct {
 	Limit int    `json:"limit,omitempty"`
 }
 
+// RuleIDInput is the JSON shape of the rule tools that take only a rule ID
+// (get_rule, delete_rule, evaluate_rule).
+type RuleIDInput struct {
+	RuleID int `json:"rule_id"`
+}
+
+// CreateRuleInput is the JSON shape the create_rule tool accepts. Rule is
+// passed through to ittt-orchestrator unchanged (see internal/ittt).
+type CreateRuleInput struct {
+	Rule json.RawMessage `json:"rule"`
+}
+
+// UpdateRuleInput is the JSON shape the update_rule tool accepts.
+type UpdateRuleInput struct {
+	RuleID int             `json:"rule_id"`
+	Rule   json.RawMessage `json:"rule"`
+}
+
+// ruleIDProperty is the shared rule_id input property of the rule tools.
+var ruleIDProperty = map[string]any{
+	"type":        "integer",
+	"description": "The rule's numeric ID, from list_rules.",
+}
+
 // ToolDefinitions is the fixed set of tools offered to the LLM on every
 // turn of every conversation, per the README's "forwards them to an LLM
 // together with the available tools". Discovery (which devices/groups and
@@ -79,7 +113,7 @@ type FuzzyFindGroupInput struct {
 // rather than being embedded in the system prompt, so the schema here does
 // not need to change as devices come and go.
 func ToolDefinitions() []anthropic.ToolUnionParam {
-	return []anthropic.ToolUnionParam{
+	tools := []anthropic.ToolUnionParam{
 		{OfTool: &anthropic.ToolParam{
 			Name:        ToolListDevices,
 			Description: anthropic.String("List every device known to the system: its numeric ID, current attribute values, and the capabilities it supports (with their argument schemas). Call this to discover which devices exist and what you can do with them before triggering a capability."),
@@ -152,11 +186,78 @@ func ToolDefinitions() []anthropic.ToolUnionParam {
 				},
 				Required: []string{"query"},
 			},
-			// A cache_control breakpoint on the last tool definition covers
-			// the whole (fixed, identical-every-call) tools array -- see
-			// internal/llm/client.go's matching breakpoints on the system
-			// prompt and the last message of history.
-			CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolListRules,
+			Description: anthropic.String("List every automation rule: its numeric ID, name, whether it is enabled, its condition tree, its actions, and its next scheduled evaluation. Call this to find a rule the user refers to, or to see what automations already exist before creating a new one."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolGetRule,
+			Description: anthropic.String("Get a single automation rule by its numeric ID, in full. Call this right before update_rule, so the replacement is based on the rule's current state."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{"rule_id": ruleIDProperty},
+				Required:   []string{"rule_id"},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolGetRuleSchema,
+			Description: anthropic.String("Get the JSON Schema of an automation rule: every condition type and its fields, the action format, and descriptions of what each part does and when a rule fires. Call this before create_rule or update_rule unless you already have it in this conversation -- never guess a condition type or field name."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolCreateRule,
+			Description: anthropic.String("Create a new automation rule: a condition tree that decides when it fires, and the device or group capabilities it triggers when it does. The rule takes effect immediately if enabled. Use get_rule_schema for the format, and list_devices/list_groups (or fuzzy_find_group) for the device/group IDs, attribute names and capability names it refers to. Returns the rule as stored, with its new ID."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{
+					"rule": map[string]any{
+						"type":        "object",
+						"description": "The rule, matching the schema returned by get_rule_schema. Omit id, next-occurence, cooldown-until and action-id; they are assigned by the system.",
+					},
+				},
+				Required: []string{"rule"},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolUpdateRule,
+			Description: anthropic.String("Replace an existing automation rule wholesale: its name, enabled flag, entire condition tree and entire list of actions are all overwritten by what you send, and anything you leave out is removed. To change part of a rule (for example, only disable it or only change one time), call get_rule first and send the full rule back with just that part changed. The change takes effect immediately. Returns the rule as stored."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{
+					"rule_id": ruleIDProperty,
+					"rule": map[string]any{
+						"type":        "object",
+						"description": "The complete replacement rule, matching the schema returned by get_rule_schema.",
+					},
+				},
+				Required: []string{"rule_id", "rule"},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolDeleteRule,
+			Description: anthropic.String("Permanently delete an automation rule. This cannot be undone. Prefer disabling the rule (update_rule with enabled set to false) when the user only wants it to stop for a while."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{"rule_id": ruleIDProperty},
+				Required:   []string{"rule_id"},
+			},
+		}},
+		{OfTool: &anthropic.ToolParam{
+			Name:        ToolEvaluateRule,
+			Description: anthropic.String("Evaluate an automation rule's condition tree against the current device states and time, without triggering its actions. Returns whether it is currently true, the reason when it is false, and when it will next be evaluated on a schedule. Use this to explain why a rule did or did not fire, or to check a rule you just created or changed."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{"rule_id": ruleIDProperty},
+				Required:   []string{"rule_id"},
+			},
 		}},
 	}
+	// A cache_control breakpoint on the last tool definition covers the
+	// whole (fixed, identical-every-call) tools array -- see
+	// internal/llm/client.go's matching breakpoints on the system prompt and
+	// the last message of history. Set here rather than in a literal so it
+	// stays on the last tool whichever tool is appended next.
+	tools[len(tools)-1].OfTool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	return tools
 }

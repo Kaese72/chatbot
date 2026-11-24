@@ -20,7 +20,7 @@ import (
 const maxTokens = 64000
 
 // SystemPrompt is the fixed system prompt for every conversation. It is
-// intentionally short: capability and device discovery happens through
+// kept short: capability, device and rule-format discovery happens through
 // tool calls (list_devices/list_groups), not by enumerating them here,
 // so the prompt does not need to be rebuilt per conversation or grow with
 // the number of devices.
@@ -34,6 +34,11 @@ If there are no reasonable groups to use, you may fallback to interacting with i
 Only use capability names and arguments you have actually seen returned by list_devices or list_groups -- never guess a capability name or its arguments.
 
 When the user refers to something by name rather than by ID, prefer a fuzzy-find tool (such as fuzzy_find_group) over listing everything and matching names yourself -- it is faster and more tolerant of misspellings or partial names. Fall back to list_devices/list_groups only when no fuzzy tool covers what you're looking for, or the fuzzy match is ambiguous and you need the fuller picture to disambiguate.
+
+You can also manage automation rules ("if this, then that": a condition tree deciding when the rule fires, and device/group capabilities it triggers) with list_rules, get_rule, create_rule, update_rule, delete_rule and evaluate_rule.
+Before writing a rule, call get_rule_schema (once per conversation) for the format, and look up every device/group ID, attribute name and capability it refers to with the device and group tools -- never guess them.
+update_rule replaces the whole rule, so always get_rule first and send back the complete rule with only the requested change. When the user just wants a rule to stop for a while, disable it rather than deleting it.
+Rules act on their own later, so if it is unclear when a rule should fire or what it should do, ask before writing it; after creating or changing one, summarize in plain language when it fires and what it then does. Ask before deleting a rule.
 
 Be concise. Confirm destructive or hard-to-reverse actions in plain language after you take them, but do not ask for permission before taking a routine, reversible action the user clearly asked for.`
 

@@ -21,6 +21,8 @@ User / UI
     |    impersonation use-token for the conversation's owner out -- see internal/serviceauth)
     |
     +--> device-store public API (Bearer use-token, as the conversation's owner, via impersonation)
+    |
+    +--> ittt-orchestrator API (automation rules; same identity as device-store)
 ```
 
 Every replica subscribes to the same `conversationEvents` fanout exchange. A "terminate" event only does something on the replica that happens to be running that conversation's `process()` goroutine; an "updated" event wakes any `.../follow/{id}` SSE connections open on any replica for that conversation, which then re-read DialogEntries from MariaDB (the database, not the event, is always the source of truth -- see `internal/events.Registry`).
@@ -36,6 +38,7 @@ internal/events/                # RabbitMQ pub/sub + in-process fan-out registri
 internal/authclient/            # authentication service's internal-listener client (impersonate) -- used only by internal/serviceauth
 internal/serviceauth/           # this pod's own Kubernetes ServiceAccount token in, impersonation use-token for the conversation's owner out
 internal/devicestore/           # device-store public API client (list/trigger devices & groups)
+internal/ittt/                  # ittt-orchestrator API client (automation rules, and the rule schema it serves)
 internal/llm/                   # Anthropic Messages API client, tool schema, tool dispatch
 internal/conversation/          # the README's "Architecture" section, literally: locking, the turn/tool loop, termination and recovery
 internal/restwebapp/            # huma REST + SSE handlers
@@ -51,9 +54,11 @@ migrations/                     # Flyway SQL migrations
 
 **Thinking is explicitly disabled on every LLM call.** The README's `DialogEntry` type enum (`USER_INPUT`, `USER_STOP`, `AGENT_MESSAGE`, `AGENT_ERROR`, the four tool-call/response types) has no slot for a thinking block. Rather than silently dropping thinking content or inventing an undocumented DialogEntry type, `internal/llm.Client.RunTurn` sends `thinking: {type: "disabled"}` on every request. If extended thinking is wanted later, that's a README change (new DialogEntry type) plus a code change together, not a silent capability the persisted transcript can't represent.
 
-**Tool surface is four fixed tools**, not one dynamically generated per conversation from the live device list:
+**Tool surface is a fixed set of tools**, not one dynamically generated per conversation from the live device list:
 - `list_devices` / `list_groups` -- discovery; generic tool calls (`AGENT_GENERIC_TOOL_CALL`/`_RESPONSE`), output is the raw JSON device-store returned.
 - `trigger_device_capability` / `trigger_group_capability` -- the two structured tools from the README (`AGENT_DEVICE_CAPABILITY_TRIGGER_CALL`/`_RESPONSE`, `AGENT_GROUP_CAPABILITY_TRIGGER_CALL`/`_RESPONSE`).
+
+Automation rule tools (all generic DialogEntries) call ittt-orchestrator's api-mode REST API via `internal/ittt`, with the same token provider as device-store (impersonation for the LLM, the forwarded caller token for MCP): `list_rules`, `get_rule`, `create_rule`, `update_rule` (whole-rule replacement, like the API), `delete_rule`, `evaluate_rule`, and `get_rule_schema`. The chatbot deliberately has no compile-time knowledge of the rule format -- it doesn't import ittt-orchestrator at all. Rule bodies pass through as raw JSON (ittt validates writes), and `get_rule_schema` relays ittt's `GET /ittt-orchestrator/v0/rules/schema` unchanged (`ittt.Client.RuleSchema`): the deployed ittt's own self-contained schema, descriptions of how conditions behave included. So a new condition type or field needs no chatbot change; its description belongs in ittt's `restmodels` (`doc` tags / `TransformSchema`), not here. The schema is a tool rather than the create/update input schema because the condition tree is recursive (`$ref`) and it's ~17 KB, which would ride along on every request's tool array. The cache_control breakpoint is set on whatever tool is last in `ToolDefinitions`, so append tools freely.
 
 This keeps the tool schema fixed and cacheable regardless of how many devices exist; the model discovers devices/groups/capabilities by calling `list_devices`/`list_groups`, the same way a human would look them up, rather than the system prompt enumerating them. `internal/llm.ClassifyTool` is the single source of truth mapping a tool name to which DialogEntry pairing it gets -- `internal/conversation` never re-derives that mapping independently, so a `*_CALL` and its `*_RESPONSE` can never end up as mismatched types.
 
@@ -82,7 +87,7 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 
 **MCP endpoint (`internal/mcpserver`, mounted at `/chatbot-service/mcp`)** reuses `llm.ToolDefinitions` (converted to MCP tool schemas) and `llm.Dispatcher`, so the LLM and MCP tool surfaces can't drift. Rules to keep:
 - It is the only route accepting API tokens: main.go passes `usertoken.AcceptAPITokens` (introspecting as the chatbot's ServiceAccount, which must be in authentication's `apiTokenIntrospectionServiceAccountNames`) plus `RejectAPITokensFor("/chatbot-service/v0/")`. That's why the path is outside `/v0/`: moved under it, MCP would stop accepting API tokens. Conversely, any new route added *outside* `/v0/` accepts API tokens unless added to the reject list.
-- Tool calls use a second `devicestore.Client` whose token provider forwards the caller's own bearer (read from `req.Extra.Header`, already verified by the middleware) -- never `serviceauth`/impersonation, which would widen a scoped API token to its owner's full permissions.
+- Tool calls use a second `devicestore.Client` (and `ittt.Client`) whose token provider forwards the caller's own bearer (read from `req.Extra.Header`, already verified by the middleware) -- never `serviceauth`/impersonation, which would widen a scoped API token to its owner's full permissions.
 - Stateless + JSON responses (no session affinity across replicas). Nothing is persisted.
 
 ## Configuration (Environment Variables)
@@ -96,6 +101,7 @@ This keeps the tool schema fixed and cacheable regardless of how many devices ex
 | `DATABASE_DATABASE` | `chatbot` | no |
 | `EVENT_CONNECTIONSTRING` | — | yes |
 | `DEVICE_STORE_URL` | `http://device-store:8080` | no |
+| `ITTT_ORCHESTRATOR_URL` | `http://ittt-orchestrator:8080` | no (ittt-orchestrator api mode, for the automation rule tools) |
 | `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | no |
 | `AUTH_RSA_PUBLIC_KEY_PATH` | — | yes (authentication service's RS256 public key, PEM/PKIX; same convention as `device-store`'s `AUTH_RSA_PUBLIC_KEY_PATH`) |
 | `AUTHENTICATION_INTERNAL_URL` | `http://authentication:8081` | no (authentication's internal listener, used to exchange this pod's own Kubernetes ServiceAccount token for an impersonation token -- see `internal/serviceauth`) |

@@ -11,6 +11,7 @@ import (
 	"github.com/Kaese72/chatbot/internal/conversation"
 	"github.com/Kaese72/chatbot/internal/devicestore"
 	"github.com/Kaese72/chatbot/internal/events"
+	"github.com/Kaese72/chatbot/internal/ittt"
 	"github.com/Kaese72/chatbot/internal/llm"
 	"github.com/Kaese72/chatbot/internal/mcpserver"
 	"github.com/Kaese72/chatbot/internal/persistence/mariadb"
@@ -44,7 +45,8 @@ func main() {
 	serviceAuth := serviceauth.NewProvider(config.Loaded.ServiceToken.Path, authClient)
 
 	deviceStoreClient := devicestore.NewClient(config.Loaded.DeviceStore.URL, serviceAuth.Token)
-	dispatcher := llm.NewDispatcher(deviceStoreClient)
+	itttClient := ittt.NewClient(config.Loaded.ITTT.URL, serviceAuth.Token)
+	dispatcher := llm.NewDispatcher(deviceStoreClient, itttClient)
 	llmClient := llm.NewClient(config.Loaded.Anthropic.Model)
 
 	publisher, err := events.NewPublisher(config.Loaded.Event.ConnectionString)
@@ -90,7 +92,7 @@ func main() {
 	// MCP (Streamable HTTP) over the same tool surface the chatbot's own LLM
 	// uses; tool calls forward the caller's own token to device-store -- see
 	// internal/mcpserver.
-	router.Handle(mcpserver.Path, mcpserver.NewHandler(config.Loaded.DeviceStore.URL, "0.1.0"))
+	router.Handle(mcpserver.Path, mcpserver.NewHandler(config.Loaded.DeviceStore.URL, config.Loaded.ITTT.URL, "0.1.0"))
 	humaConfig := huma.DefaultConfig("chatbot-service", "0.1.0")
 	humaConfig.OpenAPIPath = "/chatbot-service/openapi"
 	humaConfig.DocsPath = "/chatbot-service/docs"
